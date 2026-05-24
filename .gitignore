@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+~/.ab_config.json
+~/.ab_memory.json
+~/ab_bot.log
+ab_codes/
