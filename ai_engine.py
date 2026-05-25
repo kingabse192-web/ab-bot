@@ -297,15 +297,30 @@ class AIEngine:
                 del self.pending_q[uid]
                 result = self._multi_source_answer(uid, pq["q"])
                 if not result: result = self._memory_response(uid, pq["q"])
+                memory.add_conv(uid, "assistant", result)
                 if bot and chat_id and result:
-                    vp = self._gen_voice(result[:200])
-                    bot.send_voice(chat_id, vp)
-                    try: os.remove(vp)
-                    except: pass
-                return f"🎤 *Voice answer:*\n{result[:500]}"
+                    vp = self._gen_voice(result[:400])
+                    if vp:
+                        bot.send_voice(chat_id, vp)
+                        try: os.remove(vp)
+                        except: pass
+                return result
             if msg_lower in ["image", "img", "picture", "photo"]:
                 del self.pending_q[uid]
-                return self._cmd_imagine(uid, pq["q"], bot, chat_id)
+                result = self._multi_source_answer(uid, pq["q"])
+                if not result: result = self._memory_response(uid, pq["q"])
+                memory.add_conv(uid, "assistant", result)
+                if bot and chat_id:
+                    self._cmd_imagine(uid, result, bot, chat_id)
+                return result
+            if msg_lower in ["file", "doc", "document"]:
+                del self.pending_q[uid]
+                result = self._multi_source_answer(uid, pq["q"])
+                if not result: result = self._memory_response(uid, pq["q"])
+                memory.add_conv(uid, "assistant", result)
+                if bot and chat_id and result:
+                    bot.send_text_as_file(chat_id, result, "answer.txt", "Here's your answer")
+                return result
             # Not a format choice — treat as new question
             del self.pending_q[uid]
 
@@ -313,13 +328,14 @@ class AIEngine:
         if len(msg_lower.split()) >= 2 and not self._is_smalltalk(msg_lower):
             self.pending_q[uid] = {"q": msg, "time": time.time()}
             if bot and chat_id:
-                bot.send_buttons(chat_id, "Choose how I should answer:", [
+                bot.send_buttons(chat_id, "Choose format:", [
                     ("📝 Text", f"ans_text_{uid}"),
                     ("🎤 Voice", f"ans_voice_{uid}"),
-                    ("🖼 Image", f"ans_image_{uid}")
+                    ("🖼 Image", f"ans_image_{uid}"),
+                    ("📎 File", f"ans_file_{uid}")
                 ])
                 return None
-            return "Reply with:\n`text` — written\n`voice` — voice\n`image` — picture"
+            return "Reply with:\n`text`\n`voice`\n`image`\n`file`"
 
         # ── Multi-source AI: search → synthesize ──
         result = self._multi_source_answer(uid, msg)
@@ -331,7 +347,8 @@ class AIEngine:
         memory.add_conv(uid, "assistant", reply)
         return reply
 
-    def handle_callback(self, uid, callback_data, chat_id=None, bot=None):
+    def handle_callback(self, uid, callback_data, chat_id=None, bot=None,
+                        callback_id=None, msg_id=None):
         """Handle inline button callback for format selection"""
         parts = callback_data.split("_", 2)
         if len(parts) < 3 or parts[0] != "ans":
@@ -339,11 +356,16 @@ class AIEngine:
         fmt = parts[1]
         qdata = self.pending_q.get(uid)
         if not qdata:
-            if bot and chat_id:
-                bot.answer_callback("old", "This question expired, ask again!")
+            if bot and chat_id and callback_id:
+                bot.answer_callback(callback_id, "This question expired, ask again!")
             return None
+
         q = qdata["q"]
         del self.pending_q[uid]
+
+        # Remove the buttons (edit message to show processing)
+        if bot and chat_id and msg_id:
+            bot.edit_text(chat_id, msg_id, f"_{fmt} answer generating..._")
 
         result = self._multi_source_answer(uid, q)
         if not result:
@@ -352,25 +374,33 @@ class AIEngine:
 
         if fmt == "text":
             if bot and chat_id:
-                bot.answer_callback("done", "Sending text answer...")
+                if callback_id:
+                    bot.answer_callback(callback_id, "")
                 bot.send_msg(chat_id, result)
             return None
         elif fmt == "voice":
             if bot and chat_id:
-                bot.answer_callback("done", "Generating voice...")
-                vp = self._gen_voice(result[:200])
+                if callback_id:
+                    bot.answer_callback(callback_id, "Generating voice...")
+                vp = self._gen_voice(result[:400])
                 if vp:
                     bot.send_voice(chat_id, vp)
                     try: os.remove(vp)
                     except: pass
-                bot.send_msg(chat_id, f"*Voice answer:*\n{result[:500]}")
+                else:
+                    bot.send_msg(chat_id, result)
             return None
         elif fmt == "image":
             if bot and chat_id:
-                bot.answer_callback("done", "Generating image...")
-                img = self._cmd_imagine(uid, q, bot, chat_id)
-                if not img:
-                    bot.send_msg(chat_id, "Image generation failed. Here's text:\n" + result)
+                if callback_id:
+                    bot.answer_callback(callback_id, "Generating image...")
+                self._cmd_imagine(uid, result, bot, chat_id)
+            return None
+        elif fmt == "file":
+            if bot and chat_id:
+                if callback_id:
+                    bot.answer_callback(callback_id, "")
+                bot.send_text_as_file(chat_id, result, "answer.txt", "Here's your answer")
             return None
         return result
 

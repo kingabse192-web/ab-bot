@@ -26,7 +26,9 @@ def handle_update(bot, engine, update):
         uid = cb["from"]["id"]
         chat_id = cb["message"]["chat"]["id"]
         data = cb.get("data", "")
-        engine.handle_callback(uid, data, chat_id, bot)
+        callback_id = cb.get("id")
+        msg_id = cb["message"]["message_id"]
+        engine.handle_callback(uid, data, chat_id, bot, callback_id, msg_id)
         return
 
     msg = update.get("message")
