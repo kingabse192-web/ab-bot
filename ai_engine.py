@@ -226,6 +226,12 @@ class AIEngine:
         return results
 
     def respond(self, uid, msg, bot=None, chat_id=None):
+        msg_lower = msg.lower().strip()
+
+        # Self-identity
+        if any(w in msg_lower for w in ["who are you", "what are you", "your name", "introduce yourself", "tell me about yourself", "what is your name", "about you"]):
+            return self._cmd_about()
+
         if msg_lower in ["help", "/help"]:
             return self._cmd_help(uid)
         if msg_lower in ["facts", "/facts"]:
@@ -306,7 +312,14 @@ class AIEngine:
         # Ask format for substantive messages
         if len(msg_lower.split()) >= 2 and not self._is_smalltalk(msg_lower):
             self.pending_q[uid] = {"q": msg, "time": time.time()}
-            return "How should I answer? Reply:\n`text` — written answer\n`voice` — voice message\n`image` — generate a picture"
+            if bot and chat_id:
+                bot.send_buttons(chat_id, "Choose how I should answer:", [
+                    ("📝 Text", f"ans_text_{uid}"),
+                    ("🎤 Voice", f"ans_voice_{uid}"),
+                    ("🖼 Image", f"ans_image_{uid}")
+                ])
+                return None
+            return "Reply with:\n`text` — written\n`voice` — voice\n`image` — picture"
 
         # ── Multi-source AI: search → synthesize ──
         result = self._multi_source_answer(uid, msg)
@@ -317,6 +330,49 @@ class AIEngine:
         reply = self._memory_response(uid, msg)
         memory.add_conv(uid, "assistant", reply)
         return reply
+
+    def handle_callback(self, uid, callback_data, chat_id=None, bot=None):
+        """Handle inline button callback for format selection"""
+        parts = callback_data.split("_", 2)
+        if len(parts) < 3 or parts[0] != "ans":
+            return None
+        fmt = parts[1]
+        qdata = self.pending_q.get(uid)
+        if not qdata:
+            if bot and chat_id:
+                bot.answer_callback("old", "This question expired, ask again!")
+            return None
+        q = qdata["q"]
+        del self.pending_q[uid]
+
+        result = self._multi_source_answer(uid, q)
+        if not result:
+            result = self._memory_response(uid, q)
+        memory.add_conv(uid, "assistant", result)
+
+        if fmt == "text":
+            if bot and chat_id:
+                bot.answer_callback("done", "Sending text answer...")
+                bot.send_msg(chat_id, result)
+            return None
+        elif fmt == "voice":
+            if bot and chat_id:
+                bot.answer_callback("done", "Generating voice...")
+                vp = self._gen_voice(result[:200])
+                if vp:
+                    bot.send_voice(chat_id, vp)
+                    try: os.remove(vp)
+                    except: pass
+                bot.send_msg(chat_id, f"*Voice answer:*\n{result[:500]}")
+            return None
+        elif fmt == "image":
+            if bot and chat_id:
+                bot.answer_callback("done", "Generating image...")
+                img = self._cmd_imagine(uid, q, bot, chat_id)
+                if not img:
+                    bot.send_msg(chat_id, "Image generation failed. Here's text:\n" + result)
+            return None
+        return result
 
     def _is_smalltalk(self, msg):
         t = msg.strip().lower()
@@ -408,6 +464,24 @@ class AIEngine:
                     if rest and len(rest) > 3:
                         return rest
         return None
+
+    def _cmd_about(self):
+        return (
+            "*🤖 About ab*\n\n"
+            "I am **ab**, your personal AI assistant created by `@kingabse192web`.\n\n"
+            "*What I can do:*\n"
+            "• Answer questions with multi-source search (Wikipedia, DuckDuckGo, Google, AI)\n"
+            "• Generate images from descriptions\n"
+            "• Convert text to voice (TTS)\n"
+            "• Search movies, songs, and lyrics\n"
+            "• Generate code in 12+ languages\n"
+            "• Run GitHub commands (`gh`)\n"
+            "• Execute shell commands (`run`)\n"
+            "• Fix/debug code errors (`fix`)\n"
+            "• Learn facts you teach me (`learn`, `remember`)\n"
+            "• Create multi-step agents (`agent`)\n\n"
+            "Just ask me anything! I always answer in text/voice/image."
+        )
 
     def _cmd_help(self, uid):
         return (
@@ -576,12 +650,12 @@ class AIEngine:
         memory.learn_fact(uid, f"last_code", f"{fname} - {task}")
 
         result = f"*{lang.upper()} — {task[:50]}*\n`{fname}`\n```{lang}\n{code[:400]}\n```"
+        if bot and chat_id:
+            bot.send_msg(chat_id, result)
+            bot.send_file(chat_id, fpath, f"Code: {fname}")
+            return None
         if len(code) > 400:
-            result += "\n_(full file sent below)_"
-            if bot and chat_id:
-                bot.send_msg(chat_id, result)
-                bot.send_file(chat_id, fpath, f"Code: {fname}")
-                return None
+            result += "\n_(full code in file)_"
         return result
 
     def _gen_code(self, lang, task):

@@ -1,14 +1,8 @@
-import json, random, time, logging, os, uuid
-from urllib.request import Request, urlopen
-from urllib.error import URLError
-from urllib.parse import urlencode
+import json, random, time, logging, os, subprocess, tempfile, uuid
 
 logger = logging.getLogger("ab.bot")
 API = "https://api.telegram.org/bot"
-
-
-def _gen_boundary():
-    return "----" + uuid.uuid4().hex
+OUTBOX = os.path.expanduser("~/.ab_outbox")
 
 
 class Bot:
@@ -18,53 +12,111 @@ class Bot:
         self.verified = set()
         self.pending_codes = {}
 
-    def _call(self, method, data=None, retries=3):
+    def _enqueue(self, method, data=None, files=None):
+        """Write API call to outbox for sender process to pick up"""
+        os.makedirs(OUTBOX, exist_ok=True)
+        fid = str(uuid.uuid4())[:8]
+        entry = {"base": self.base, "method": method, "data": data, "files": files}
+        path = os.path.join(OUTBOX, f"{fid}.json")
+        with open(path, "w") as f:
+            json.dump(entry, f)
+        return {"ok": True, "queued": True}
+
+    def _curl(self, method, data=None):
+        """Try curl first — returns None if it fails"""
         url = f"{self.base}/{method}"
-        timeout = 10
+        out = tempfile.mktemp(suffix=".json")
+        try:
+            args = ["curl", "-s", "--max-time", "20", "--connect-timeout", "10"]
+            if data is not None:
+                inp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json")
+                json.dump(data, inp)
+                inp.close()
+                args.extend(["-X", "POST", "-H", "Content-Type: application/json", "-d", f"@{inp.name}"])
+            else:
+                inp = None
+            args.extend(["-o", out, url])
+            r = subprocess.run(args, capture_output=True, timeout=30)
+            if inp:
+                try: os.unlink(inp.name)
+                except: pass
+            if r.returncode == 0:
+                with open(out) as f:
+                    return json.load(f)
+            return None
+        except Exception as e:
+            logger.warning(f"curl {method} exception: {e}")
+            return None
+        finally:
+            try: os.unlink(out)
+            except: pass
+
+    def _call(self, method, data=None, retries=2):
         for attempt in range(retries):
             try:
-                body = json.dumps(data).encode() if data else None
-                req = Request(url, data=body, headers={"Content-Type": "application/json"})
-                resp = urlopen(req, timeout=timeout)
-                result = json.loads(resp.read())
-                return result
-            except URLError as e:
-                if method == "getUpdates":
-                    return {"ok": True, "result": []}
+                result = self._curl(method, data)
+                if result:
+                    return result
+                time.sleep(1)
+            except Exception as e:
                 logger.warning(f"API call {method} failed: {e}")
                 if attempt < retries - 1:
-                    time.sleep(2)
-            except Exception as e:
-                if method == "getUpdates":
-                    return {"ok": True, "result": []}
-                logger.error(f"Unexpected error in {method}: {e}")
-                return None
-        return None
+                    time.sleep(1)
+        # Fallback: enqueue for sender
+        logger.warning(f"Enqueuing {method} to outbox")
+        return self._enqueue(method, data)
 
     def _multipart(self, method, fields, files):
-        boundary = _gen_boundary()
-        body_bytes = b""
-        for k, v in fields.items():
-            body_bytes += f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode()
-        for k, (filename, data, mime) in files.items():
-            body_bytes += f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"; filename=\"{filename}\"\r\nContent-Type: {mime}\r\n\r\n".encode()
-            body_bytes += data + b"\r\n"
-        body_bytes += f"--{boundary}--\r\n".encode()
-
+        # Files is dict of {key: (filename, data_bytes, mime)}
+        file_refs = {}
+        tmp_files = []
+        for k, (fname, data, mime) in (files or {}).items():
+            tmp = os.path.join(tempfile.mkdtemp(), fname)
+            with open(tmp, "wb") as f:
+                f.write(data)
+            file_refs[k] = {"path": tmp, "mime": mime}
+            tmp_files.append(tmp)
+        # Try curl first
         url = f"{self.base}/{method}"
         try:
-            req = Request(url, data=body_bytes, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-            resp = urlopen(req, timeout=60)
-            return json.loads(resp.read())
+            args = ["curl", "-s", "--max-time", "60"]
+            for k, v in fields.items():
+                args.extend(["-F", f"{k}={v}"])
+            for k, ref in file_refs.items():
+                args.extend(["-F", f"{k}=@{ref['path']};type={ref['mime']}"])
+            args.append(url)
+            r = subprocess.run(args, capture_output=True, timeout=70)
+            if r.returncode == 0:
+                return json.loads(r.stdout)
+            logger.warning(f"curl multipart {method} failed: {r.stderr[:200]}")
         except Exception as e:
             logger.error(f"Multipart upload failed: {e}")
-            return None
+        # Fallback: enqueue
+        file_data = {}
+        for k, ref in file_refs.items():
+            with open(ref["path"], "rb") as f:
+                file_data[k] = [os.path.basename(ref["path"]), ref["mime"]]
+        return self._enqueue(method, fields, file_data)
 
     def send_msg(self, chat_id, text, parse_mode="Markdown"):
         return self._call("sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": parse_mode})
 
     def send_plain(self, chat_id, text):
         return self._call("sendMessage", {"chat_id": chat_id, "text": text})
+
+    def send_buttons(self, chat_id, text, buttons, parse_mode="Markdown"):
+        kb = {"inline_keyboard": [[{"text": b, "callback_data": d}] for b, d in buttons]}
+        return self._call("sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": parse_mode, "reply_markup": kb})
+
+    def edit_buttons(self, chat_id, msg_id, text, buttons, parse_mode="Markdown"):
+        kb = {"inline_keyboard": [[{"text": b, "callback_data": d}] for b, d in buttons]}
+        return self._call("editMessageText", {"chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": parse_mode, "reply_markup": kb})
+
+    def edit_text(self, chat_id, msg_id, text, parse_mode="Markdown"):
+        return self._call("editMessageText", {"chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": parse_mode})
+
+    def answer_callback(self, callback_id, text=""):
+        return self._call("answerCallbackQuery", {"callback_query_id": callback_id, "text": text})
 
     def send_action(self, chat_id, action="typing"):
         return self._call("sendChatAction", {"chat_id": chat_id, "action": action})

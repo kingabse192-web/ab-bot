@@ -20,6 +20,15 @@ logging.getLogger("ab").addHandler(fh)
 
 
 def handle_update(bot, engine, update):
+    # Handle button callbacks
+    cb = update.get("callback_query")
+    if cb:
+        uid = cb["from"]["id"]
+        chat_id = cb["message"]["chat"]["id"]
+        data = cb.get("data", "")
+        engine.handle_callback(uid, data, chat_id, bot)
+        return
+
     msg = update.get("message")
     if not msg:
         return
