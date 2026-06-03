@@ -304,6 +304,8 @@ class AIEngine:
                         bot.send_voice(chat_id, vp)
                         try: os.remove(vp)
                         except: pass
+                    else:
+                        bot.send_msg(chat_id, f"🔊 Voice unavailable, here's the text:\n\n{result[:2000]}")
                 return result
             if msg_lower in ["image", "img", "picture", "photo"]:
                 del self.pending_q[uid]
@@ -311,7 +313,7 @@ class AIEngine:
                 if not result: result = self._memory_response(uid, pq["q"])
                 memory.add_conv(uid, "assistant", result)
                 if bot and chat_id:
-                    self._cmd_imagine(uid, result, bot, chat_id)
+                    self._cmd_imagine(uid, pq["q"], bot, chat_id)
                 return result
             if msg_lower in ["file", "doc", "document"]:
                 del self.pending_q[uid]
@@ -390,13 +392,13 @@ class AIEngine:
                     try: os.remove(vp)
                     except: pass
                 else:
-                    bot.send_msg(chat_id, result)
+                    bot.send_msg(chat_id, f"🔊 Voice unavailable, here's the text:\n\n{result[:2000]}")
             return None
         elif fmt == "image":
             if bot and chat_id:
                 if callback_id:
                     bot.answer_callback(callback_id, "Generating image...")
-                self._cmd_imagine(uid, result, bot, chat_id)
+                self._cmd_imagine(uid, q, bot, chat_id)
             return None
         elif fmt == "file":
             if bot and chat_id:
@@ -1168,20 +1170,30 @@ main();
 
     def _gen_voice(self, text):
         path = os.path.join(tempfile.gettempdir(), f"ab_voice_{int(time.time())}.mp3")
-        encoded = urllib.parse.quote(text)
+        encoded = urllib.parse.quote(text[:200])
+        # Try HuggingFace TTS model
         try:
-            req = urllib.request.Request(f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded}&tl=en&client=tw-ob",
-                                         headers={"User-Agent": "Mozilla/5.0"})
+            d = json.dumps({"inputs": text[:200]}).encode()
+            req = Request("https://api-inference.huggingface.co/models/facebook/mms-tts-eng",
+                          data=d, headers={"Content-Type": "application/json"})
+            resp = urlopen(req, timeout=20)
+            with open(path, "wb") as f:
+                f.write(resp.read())
+            if os.path.getsize(path) > 200:
+                return path
+        except: pass
+        # Fallback: Google TTS
+        try:
+            req = urllib.request.Request(
+                f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded}&tl=en&client=at",
+                headers={"User-Agent": "Mozilla/5.0"})
             resp = urllib.request.urlopen(req, timeout=10)
             with open(path, "wb") as f:
                 f.write(resp.read())
-        except:
-            path = path.replace(".mp3", ".wav")
-            with wave.open(path, 'w') as w:
-                w.setnchannels(1); w.setsampwidth(2); w.setframerate(8000)
-                for i in range(8000):
-                    w.writeframes(struct.pack('<h', int(math.sin(2*math.pi*440*i/8000)*5000)))
-        return path
+            if os.path.getsize(path) > 200:
+                return path
+        except: pass
+        return None
 
     def _query_ollama(self, uid, msg, search_context=""):
         try:
