@@ -1460,6 +1460,7 @@ main();
         topic = self._extract_topic(msg) or msg.strip().rstrip("?!.")
 
         sources = []
+        links = []
 
         # ── STEP 1: SEARCH THE WEB (multiple sources) ──
         try:
@@ -1472,19 +1473,28 @@ main();
                                     headers={"User-Agent": "ab-bot/1.0"}), timeout=8)
                 data = json.loads(r.read())
                 txt = data.get("AbstractText", "") or data.get("Answer", "")
+                abstract_url = data.get("AbstractURL", "")
                 if txt: snippets.append("[DuckDuckGo] " + txt[:600])
+                if abstract_url: links.append(("DuckDuckGo", abstract_url))
                 for rt in data.get("RelatedTopics", [])[:3]:
-                    if isinstance(rt, dict) and rt.get("Text"): snippets.append("[Related] " + rt["Text"][:300])
+                    if isinstance(rt, dict) and rt.get("Text"):
+                        snippets.append("[Related] " + rt["Text"][:300])
+                        if rt.get("FirstURL"): links.append(("Related", rt["FirstURL"]))
             except: pass
+            # 1b) DuckDuckGo HTML search
             try:
                 html = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0", "--max-time", "5",
                                        f"https://lite.duckduckgo.com/lite/?q={encoded}"],
                                       capture_output=True, text=True, timeout=8)
                 if html.returncode == 0:
                     import re as _re
-                    for s in _re.findall(r'class="result-snippet".*?>(.*?)</td>', html.stdout, _re.DOTALL)[:2]:
+                    for s, link in zip(
+                        _re.findall(r'class="result-snippet".*?>(.*?)</td>', html.stdout, _re.DOTALL)[:3],
+                        _re.findall(r'class="result-link".*?href="(.*?)".*?>(.*?)</a>', html.stdout, _re.DOTALL)[:3]
+                    ):
                         clean = _re.sub(r'<[^>]+>', '', s).strip()
                         if clean: snippets.append(clean[:250])
+                        if link: links.append(("Web", link[0] if not link[0].startswith("//") else "https:" + link[0]))
             except: pass
             # 1c) Google search via scraping
             try:
@@ -1496,6 +1506,11 @@ main();
                     for s in _re2.findall(r'<div[^>]*class="[^"]*BNeawe[^"]*"[^>]*>(.*?)</div>', html2.stdout, _re2.DOTALL)[:2]:
                         clean = _re2.sub(r'<[^>]+>', '', s).strip()
                         if clean: snippets.append("[Google] " + clean[:300])
+                    for link in _re2.findall(r'<a[^>]*href="(/url\?q=[^"&]+)', html2.stdout)[:3]:
+                        import urllib.parse as _up2
+                        parsed = _up2.parse_qs(link.replace("/url?q=", "").split("&")[0])
+                        url = parsed.get("q", [None])[0]
+                        if url: links.append(("Google", url))
             except: pass
             if snippets:
                 sources.append(("Web", "\n".join(snippets[:5])))
@@ -1538,14 +1553,24 @@ main();
                 d2 = json.loads(resp2.read())
                 if d2.get("extract"):
                     sources.append(("Wikipedia", d2["extract"][:700]))
+                    wiki_url = d2.get("content_urls", {}).get("desktop", {}).get("page", f"https://en.wikipedia.org/wiki/{pt}")
+                    links.append(("Wikipedia", wiki_url))
         except: pass
 
-        # ── STEP 4: CROSS-SOURCE ANALYSIS (compare Web, AI, Wikipedia — find common ground) ──
-        # ── STEP 5: FINAL CONCLUSION ──
+        # ── STEP 5: FINAL CONCLUSION + SOURCE LINKS ──
         conclusion = self._build_answer(sources, topic) or memory.cache_get(topic)
         if isinstance(conclusion, dict):
             conclusion = conclusion["a"]
         if conclusion:
+            # Append source links to conclusion
+            seen_urls = set()
+            link_lines = []
+            for src_name, url in links:
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    link_lines.append(f"🔗 [{src_name}]({url})")
+            if link_lines:
+                conclusion += "\n\n📚 *Sources:*\n" + "\n".join(link_lines[:5])
             memory.learn_fact(uid, f"about_{topic[:30]}", conclusion[:500])
             memory.learn_fact(uid, "last_topic", topic)
             if sources:
