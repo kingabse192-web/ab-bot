@@ -1169,29 +1169,35 @@ main();
         return f"🔊 *Voice:* {text[:500]}"
 
     def _gen_voice(self, text):
+        # Strip markdown for clean TTS
+        clean = re.sub(r'[*_~`#\[\]]+', '', text[:300]).strip()
+        if not clean: clean = "No text to speak."
+        encoded = urllib.parse.quote(clean[:200])
         path = os.path.join(tempfile.gettempdir(), f"ab_voice_{int(time.time())}.mp3")
-        encoded = urllib.parse.quote(text[:200])
-        # Try HuggingFace TTS model
+        # 1) Google TTS (returns proper MP3)
+        for client in ["tw-ob", "at", "t"]:
+            try:
+                req = urllib.request.Request(
+                    f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded}&tl=en&client={client}",
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                             "Referer": "https://translate.google.com/"})
+                resp = urllib.request.urlopen(req, timeout=15)
+                with open(path, "wb") as f:
+                    f.write(resp.read())
+                if os.path.getsize(path) > 500:
+                    return path
+            except: continue
+        # 2) HuggingFace TTS (returns WAV → resave as .wav, send via audio)
         try:
-            d = json.dumps({"inputs": text[:200]}).encode()
+            d = json.dumps({"inputs": clean[:200]}).encode()
             req = Request("https://api-inference.huggingface.co/models/facebook/mms-tts-eng",
                           data=d, headers={"Content-Type": "application/json"})
-            resp = urlopen(req, timeout=20)
-            with open(path, "wb") as f:
+            resp = urlopen(req, timeout=25)
+            wav_path = path.replace(".mp3", ".wav")
+            with open(wav_path, "wb") as f:
                 f.write(resp.read())
-            if os.path.getsize(path) > 200:
-                return path
-        except: pass
-        # Fallback: Google TTS
-        try:
-            req = urllib.request.Request(
-                f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded}&tl=en&client=at",
-                headers={"User-Agent": "Mozilla/5.0"})
-            resp = urllib.request.urlopen(req, timeout=10)
-            with open(path, "wb") as f:
-                f.write(resp.read())
-            if os.path.getsize(path) > 200:
-                return path
+            if os.path.getsize(wav_path) > 500:
+                return wav_path
         except: pass
         return None
 
