@@ -1,0 +1,9 @@
+services:
+  - type: worker
+    name: ab-bot
+    runtime: python
+    buildCommand: ""
+    startCommand: python3 main.py
+    envVars:
+      - key: AB_TOKEN
+        sync: false
