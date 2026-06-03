@@ -1356,11 +1356,24 @@ main();
         memory.learn_fact(uid, "last_topic", topic)
 
         # ═══ Build final answer ═══
-        reply = f"*{topic.title()}*\n\n"
+        reply_lines = [f"*{topic.title()}*\n"]
         for label, text in steps:
-            reply += f"{label}\n{text[:400]}\n\n"
-        reply += "━━━━━━━━━━━━━━━━\n_Choose a format below to receive the answer._"
-        return reply[:3500]
+            if label.startswith("1.") or label.startswith("🌐"):
+                reply_lines.append(f"┃ 🌐 *{label.split(' ', 1)[1]}*")
+            elif label.startswith("2.") or label.startswith("🤖"):
+                reply_lines.append(f"┃ 🤖 *{label.split(' ', 1)[1]}*")
+            elif label.startswith("3.") or label.startswith("📚"):
+                reply_lines.append(f"┃ 📚 *{label.split(' ', 1)[1]}*")
+            elif label.startswith("4.") or label.startswith("🔍"):
+                reply_lines.append(f"┃ 🔍 *{label.split(' ', 1)[1]}*")
+            elif label.startswith("5.") or label.startswith("✅"):
+                reply_lines.append(f"┃ ✅ *{label.split(' ', 1)[1]}*")
+            else:
+                reply_lines.append(f"┃ *{label}*")
+            reply_lines.append(f"┃ {text[:350]}")
+            reply_lines.append("┃")
+        reply_lines.append("╰━ *6. 📤 Choose format below*")
+        return "\n".join(reply_lines)[:3500]
 
         # Fallback if no sources found
         if len(words) > 3:
