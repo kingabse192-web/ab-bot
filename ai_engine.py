@@ -233,9 +233,8 @@ class AIEngine:
         q = pq["q"]
         result = pq.get("result")
         if not result:
-            sources, result = self._research(uid, q)
+            s, result = self._research(uid, q)
             pq["result"] = result
-            pq["sources"] = sources
             memory.add_conv(uid, "assistant", result)
 
         if fmt == "text":
@@ -266,6 +265,7 @@ class AIEngine:
 
     def respond(self, uid, msg, bot=None, chat_id=None):
         msg_lower = msg.lower().strip()
+        words = msg.split()
 
         if any(w in msg_lower for w in ["who are you", "what are you", "your name", "introduce yourself", "tell me about yourself", "what is your name", "about you"]):
             return self._cmd_about()
@@ -320,7 +320,7 @@ class AIEngine:
         if self._is_code_request(msg_lower):
             return self._auto_code(uid, msg, bot, chat_id)
 
-        # Pending format selection
+        # Pending format change
         if uid in self.pending_q:
             fmts = {"text": "text", "txt": "text", "voice": "voice", "voise": "voice",
                     "image": "image", "img": "image", "picture": "image", "photo": "image",
@@ -329,33 +329,34 @@ class AIEngine:
                 return self._deliver(uid, fmts[msg_lower], bot, chat_id)
             self.pending_q.pop(uid)
 
-        # Detect conversation mode
+        # Decide: research question or casual chat?
         mode_desc, personality = self._detect_mode(msg)
-        is_research = mode_desc in ("agent", "teacher")
-        is_casual = mode_desc in ("brother", "partner", "friend")
-        is_question = msg_lower.endswith("?") or any(msg_lower.startswith(w) for w in ["what", "why", "how", "when", "where", "who", "can", "could", "will", "would", "do", "does", "did", "is", "are", "was", "were", "has", "have", "had", "tell", "show", "explain", "define", "describe"])
+        is_question = msg_lower.endswith("?") or any(msg_lower.startswith(w) for w in
+            ["what", "why", "how", "when", "where", "who", "can", "could", "will", "would",
+             "do", "does", "did", "is", "are", "was", "were", "has", "have", "had",
+             "tell", "show", "explain", "define", "describe"])
+        is_casual = mode_desc in ("brother", "partner", "friend") or self._is_smalltalk(msg_lower)
 
-        # Research question (agent/teacher mode or question-like) → format buttons
-        if is_research or (is_question and len(msg_lower.split()) >= 2 and not self._is_smalltalk(msg_lower)):
-            self.pending_q[uid] = {"q": msg, "time": time.time()}
+        # Research question → answer direct + optional format change
+        if not is_casual and (mode_desc in ("agent", "teacher") or (is_question and len(words) >= 2)):
+            sources, result = self._research(uid, msg)
+            if not result:
+                result = self._memory_response(uid, msg)
+            memory.add_conv(uid, "assistant", result)
+            self.pending_q[uid] = {"q": msg, "result": result, "time": time.time()}
             if bot and chat_id:
-                bot.send_buttons(chat_id, "📤 Choose format:", [
-                    ("📝 Text", f"ans_text_{uid}"),
+                bot.send_msg(chat_id, result)
+                bot.send_buttons(chat_id, "Change format:", [
                     ("🎤 Voice", f"ans_voice_{uid}"),
                     ("🖼 Image", f"ans_image_{uid}"),
                     ("📎 File", f"ans_file_{uid}")
-
                 ])
-                return None
+            return None
 
-        # Casual chat / emotional support → direct AI reply (no format buttons)
+        # Casual / everything else → direct AI reply
         result = self._memory_response(uid, msg)
         memory.add_conv(uid, "assistant", result)
         return result
-
-        reply = self._memory_response(uid, msg)
-        memory.add_conv(uid, "assistant", reply)
-        return reply
 
     def handle_callback(self, uid, callback_data, chat_id=None, bot=None,
                         callback_id=None, msg_id=None):
@@ -1397,11 +1398,18 @@ main();
         ctx = memory.build_context(uid)
         mood = self.mood.detect(msg)
         mode, personality = self._detect_mode(msg)
+        facts = memory.get_facts(uid)
+        name = facts.get("name", {}).get("v", "")
+        last_topic = facts.get("last_topic", {}).get("v", "")
 
         prompt = (
             f"You are ab, a personal AI assistant. "
             f"User: {name or 'someone'}. Mood: {mood}. "
             f"Personality: {personality}. "
+            f"We have a {mode} relationship — act accordingly. "
+            f"When asked about 'us', 'you', 'me', or our relationship, "
+            f"speak naturally about our bond and history together. "
+            f"When asked about yourself, answer as ab — you're their AI. "
             f"Rules: {'; '.join(rules) if rules else 'be natural'}\n"
             f"Keep responses natural, brief, and in character.\n\n"
             f"{ctx[:600]}\n\n"
