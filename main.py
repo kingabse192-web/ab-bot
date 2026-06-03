@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-import sys, time, json, logging, os
+import sys, time, json, logging, os, threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config, memory
@@ -12,6 +13,16 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger("ab.main")
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"status":"ok"}')
+    def log_message(self, format, *args):
+        pass
 
 LOG_FILE = os.path.expanduser("~/ab_bot.log")
 fh = logging.FileHandler(LOG_FILE)
@@ -121,7 +132,15 @@ def handle_update(bot, engine, update):
             bot.send_msg(chat_id, reply)
 
 
+def start_http():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    logger.info(f"Health server on :{port}")
+    server.serve_forever()
+
 def main():
+    threading.Thread(target=start_http, daemon=True).start()
+
     cfg = config.load()
     token = os.environ.get("AB_TOKEN") or cfg.get("token")
 
