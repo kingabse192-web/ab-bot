@@ -8,9 +8,27 @@ OUTBOX = os.path.expanduser("~/.ab_outbox")
 class Bot:
     def __init__(self, token):
         self.base = API + token
-        self.offset = 0
+        self.offset = self._load_offset()
         self.verified = set()
         self.pending_codes = {}
+
+    def _offset_path(self):
+        return os.path.expanduser("~/.ab_offset")
+
+    def _load_offset(self):
+        p = self._offset_path()
+        try:
+            with open(p) as f:
+                return int(f.read().strip())
+        except:
+            return 0
+
+    def _save_offset(self):
+        try:
+            with open(self._offset_path(), "w") as f:
+                f.write(str(self.offset))
+        except:
+            pass
 
     def _enqueue(self, method, data=None, files=None):
         """Write API call to outbox for sender process to pick up"""
@@ -202,6 +220,8 @@ class Bot:
             if result.get("ok"):
                 for update in result.get("result", []):
                     self.offset = update["update_id"] + 1
+                if result["result"]:
+                    self._save_offset()
                 return result["result"]
         except Exception as e:
             logger.warning(f"getUpdates error: {e}")
@@ -220,6 +240,8 @@ class Bot:
                 if result.get("ok"):
                     for update in result.get("result", []):
                         self.offset = update["update_id"] + 1
+                    if result["result"]:
+                        self._save_offset()
                     return result["result"]
             logger.warning(f"getUpdates curl failed (code {r.returncode}): {r.stderr[:200]}")
         except Exception as e:
