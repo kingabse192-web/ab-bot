@@ -115,6 +115,7 @@ class AIEngine:
         self.check_ollama()
         os.makedirs(CODE_DIR, exist_ok=True)
         self.mood = MoodDetector()
+        self._download_seed()
 
     def check_ollama(self):
         if time.time() - self.ollama_check_time < 30:
@@ -1491,6 +1492,7 @@ main();
         )
         ai_reply = self._query_free_ai(uid, msg, "", prompt)
         if ai_reply and len(ai_reply) > 15:
+            self._learn_pair(msg, ai_reply)
             return ai_reply[:1500]
 
         # Local fallback: answer from profile + cached knowledge
@@ -1519,6 +1521,10 @@ main();
             if last:
                 s, r = self._research(uid, last)
                 if r: return r
+        # Recall from past conversations (learns to talk like me)
+        recalled = self._recall(msg)
+        if recalled:
+            return recalled
         # Local knowledge base fallback
         local = self._local_kb_answer(msg)
         if local:
@@ -1528,29 +1534,52 @@ main();
             return f"👋 {name or ''} — I remember you! {profile[:500]}"
         return "💬 I'm listening. Tell me about yourself!"
 
-    # ── Local knowledge base (downloaded chatbot) ──
-    KB_FILE = os.path.expanduser("~/.ab_knowledge.json")
+    # ── Local conversational AI (learns from every chat) ──
+    MEM_FILE = os.path.expanduser("~/.ab_chatmem.json")
 
-    def _download_kb(self):
-        if os.path.exists(self.KB_FILE) and time.time() - os.path.getmtime(self.KB_FILE) < 86400:
-            return json.load(open(self.KB_FILE))
-        try:
-            url = "https://raw.githubusercontent.com/kingabse192-web/ab-bot/main/knowledge.json"
-            resp = urlopen(Request(url, headers={"User-Agent": "ab-bot/1.0"}), timeout=10)
-            data = json.loads(resp.read())
-            with open(self.KB_FILE, "w") as f:
-                json.dump(data, f, indent=2)
-            return data
-        except:
-            if os.path.exists(self.KB_FILE):
-                return json.load(open(self.KB_FILE))
-            return {"qna": [], "facts": []}
+    def _load_chatmem(self):
+        if os.path.exists(self.MEM_FILE):
+            with open(self.MEM_FILE) as f:
+                return json.load(f)
+        return {"pairs": [], "patterns": []}
+
+    def _save_chatmem(self, d):
+        os.makedirs(os.path.dirname(self.MEM_FILE), exist_ok=True)
+        with open(self.MEM_FILE, "w") as f:
+            json.dump(d, f, indent=2)
+
+    def _learn_pair(self, q, a):
+        d = self._load_chatmem()
+        d.setdefault("pairs", []).append({"q": q.lower().strip(), "a": a[:500], "t": time.time()})
+        if len(d["pairs"]) > 1000:
+            d["pairs"] = d["pairs"][-1000:]
+        self._save_chatmem(d)
+
+    def _recall(self, msg):
+        """Find best matching past Q&A using word overlap"""
+        d = self._load_chatmem()
+        words = set(msg.lower().split())
+        best = (0, "", "")
+        for p in d.get("pairs", []):
+            q_words = set(p["q"].split())
+            overlap = len(words & q_words)
+            total = len(words | q_words)
+            score = overlap / total if total > 0 else 0
+            if score > best[0]:
+                best = (score, p["a"], p["q"])
+        if best[0] >= 0.3:
+            return best[1]
+        return None
+
+    # ── Local knowledge base matcher ──
+    KB_URL = "https://raw.githubusercontent.com/kingabse192-web/ab-bot/main/knowledge.json"
 
     def _local_kb_answer(self, msg):
         try:
-            kb = self._download_kb()
             t = msg.lower().strip().rstrip("?!.")
             words = set(t.split())
+            resp = urlopen(Request(self.KB_URL, headers={"User-Agent": "ab-bot/1.0"}), timeout=8)
+            kb = json.loads(resp.read())
             best_score, best_answer = 0, None
             for item in kb.get("qna", []):
                 q_words = set(item["q"].lower().split())
@@ -1560,10 +1589,29 @@ main();
                     best_answer = item["a"]
             if best_score >= 2 and best_answer:
                 return best_answer[:1500]
-            # Check facts
             for item in kb.get("facts", []):
                 if item.get("k", "").lower() in t:
                     return item.get("v", "")[:1500]
         except:
             pass
         return None
+
+    # ── Download a conversational seed from HuggingFace ──
+    SEED_URL = "https://raw.githubusercontent.com/kingabse192-web/ab-bot/main/seed_conversations.json"
+
+    def _download_seed(self):
+        d = self._load_chatmem()
+        if len(d.get("pairs", [])) > 50:
+            return
+        try:
+            resp = urlopen(Request(self.SEED_URL, headers={"User-Agent": "ab-bot/1.0"}), timeout=10)
+            seed = json.loads(resp.read())
+            for pair in seed.get("conversations", []):
+                q, a = pair.get("q", ""), pair.get("a", "")
+                if q and a:
+                    exists = any(p["q"] == q.lower().strip() for p in d["pairs"])
+                    if not exists:
+                        d["pairs"].append({"q": q.lower().strip(), "a": a[:500], "t": 0})
+            self._save_chatmem(d)
+        except:
+            pass
