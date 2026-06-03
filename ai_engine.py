@@ -1225,24 +1225,27 @@ main();
     def _build_answer(self, sources, topic):
         if not sources:
             return None
-        # Try AI synthesis first
         all_text = "\n".join(f"{s[1][:300]}" for s in sources)
+        # Check cache first
+        cached = memory.cache_get(topic)
+        if cached:
+            return cached["a"][:2000]
+        # Try AI
         ai = self._query_free_ai(0, f"Answer concisely about: {topic}", all_text)
-        if ai and len(ai) > 30 and topic.lower() in ai.lower():
+        if ai and len(ai) > 30:
+            memory.cache_set(topic, ai)
             return ai[:2000]
         if self.ollama_ready:
             ai = self._query_ollama(0, f"Answer: {topic}", all_text)
             if ai and len(ai) > 30:
+                memory.cache_set(topic, ai)
                 return ai[:2000]
-        # Manual synthesis: pick best source
+        # Manual: best source
         for src in sources:
             if src[0] == "Wikipedia" and len(src[1]) > 100:
                 return src[1][:1500]
         for src in sources:
             if src[0] == "Web" and len(src[1]) > 100:
-                return src[1][:1500]
-        for src in sources:
-            if src[0] == "AI" and len(src[1]) > 50:
                 return src[1][:1500]
         if sources:
             return sources[0][1][:1000]
@@ -1323,11 +1326,15 @@ main();
                     sources.append(("Wikipedia", d2["extract"][:700]))
         except: pass
 
-        # Build answer
-        conclusion = self._build_answer(sources, topic)
+        # Build answer (check cache, save to cache)
+        conclusion = self._build_answer(sources, topic) or memory.cache_get(topic)
+        if isinstance(conclusion, dict):
+            conclusion = conclusion["a"]
         if conclusion:
             memory.learn_fact(uid, f"about_{topic[:30]}", conclusion[:500])
             memory.learn_fact(uid, "last_topic", topic)
+            if sources:
+                memory.cache_set(topic, conclusion)
             return sources, conclusion
 
         # Fallback: retry with shorter query
@@ -1420,12 +1427,33 @@ main();
         if ai_reply and len(ai_reply) > 15:
             return ai_reply[:1500]
 
-        # Fallback
+        # Local fallback: answer from profile + cached knowledge
+        profile = memory.build_profile(uid)
+        cached = memory.cache_get(msg)
+        if cached:
+            return cached["a"][:1000]
+        # Reply from known facts
+        if "my name" in msg_lower or "what is my name" in msg_lower or "do you know me" in msg_lower:
+            if name: return f"👤 Of course! You're *{name}* 😊"
+            return "I'd love to know your name! Tell me: `my name is ...`"
+        if "what do you know" in msg_lower or "about me" in msg_lower or "what you know" in msg_lower:
+            p = memory.build_profile(uid)
+            if p: return f"🧠 *What I know about you:*\n{p[:1500]}"
+            return "I'm still learning about you! Tell me things like `I like music` or `my name is ...`"
+        if "who am i" in msg_lower:
+            p = memory.build_profile(uid)
+            if p: return f"👤 You are:\n{p[:1000]}"
+            return "You're you! Tell me more about yourself so I can know you better 😊"
+        if any(w in msg_lower for w in ["do i like", "do i hate", "what is my favorite", "what do i"]):
+            p = memory.build_profile(uid)
+            if p: return f"🧠 Based on what you've told me:\n{p[:1000]}"
+            return "You haven't told me that yet! Say `I like ...` or `I hate ...`"
         if any(w in msg_lower for w in ["more", "again", "elaborate", "continue", "further"]):
             last = facts.get("last_topic", {}).get("v", "")
             if last:
                 s, r = self._research(uid, last)
                 if r: return r
-        if name:
-            return f"👤 {name}? I'm here. What's up? 🤖"
-        return "💬 I'm listening. What's on your mind? 😊"
+        # Final: always say something from profile
+        if profile:
+            return f"👋 {name or ''} — I remember you! {profile[:500]}"
+        return "💬 I'm listening. Tell me about yourself!"
