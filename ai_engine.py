@@ -225,13 +225,46 @@ class AIEngine:
             results.append(("AI", ai_reply[:500]))
         return results
 
+    def _deliver(self, uid, fmt, bot, chat_id, callback_id=None, msg_id=None):
+        pq = self.pending_q.pop(uid, None)
+        if not pq:
+            if bot and callback_id: bot.answer_callback(callback_id, "Question expired, ask again!")
+            return None
+        result = pq.get("result") or self._conclude(uid, pq["topic"], pq.get("sources", []))
+        q = pq["q"]
+        memory.add_conv(uid, "assistant", result)
+
+        if fmt == "text":
+            if bot and chat_id:
+                if callback_id: bot.answer_callback(callback_id, "")
+                bot.send_msg(chat_id, result)
+        elif fmt == "voice":
+            if bot and chat_id:
+                if callback_id: bot.answer_callback(callback_id, "Generating voice...")
+                vp = self._gen_voice(result[:400])
+                if vp:
+                    bot.send_voice(chat_id, vp)
+                    try:
+                        os.remove(vp)
+                    except:
+                        pass
+                else:
+                    bot.send_msg(chat_id, f"🔊 Voice unavailable:\n\n{result[:2000]}")
+        elif fmt == "image":
+            if bot and chat_id:
+                if callback_id: bot.answer_callback(callback_id, "Generating image...")
+                self._cmd_imagine(uid, q, bot, chat_id)
+        elif fmt == "file":
+            if bot and chat_id:
+                if callback_id: bot.answer_callback(callback_id, "")
+                bot.send_text_as_file(chat_id, result, "answer.txt", "Your answer")
+        return None
+
     def respond(self, uid, msg, bot=None, chat_id=None):
         msg_lower = msg.lower().strip()
 
-        # Self-identity
         if any(w in msg_lower for w in ["who are you", "what are you", "your name", "introduce yourself", "tell me about yourself", "what is your name", "about you"]):
             return self._cmd_about()
-
         if msg_lower in ["help", "/help"]:
             return self._cmd_help(uid)
         if msg_lower in ["facts", "/facts"]:
@@ -280,70 +313,37 @@ class AIEngine:
             return self._cmd_voice(uid, msg, bot, chat_id)
         if msg_lower.startswith(("fix ", "/fix ", "debug ", "/debug ")):
             return self._cmd_fix(uid, msg, bot, chat_id)
-
         if self._is_code_request(msg_lower):
             return self._auto_code(uid, msg, bot, chat_id)
 
-        # ── Format selection flow ──
+        # Pending format selection
         if uid in self.pending_q:
-            pq = self.pending_q[uid]
-            if msg_lower in ["text", "txt"]:
-                del self.pending_q[uid]
-                result = self._multi_source_answer(uid, pq["q"])
-                if not result: result = self._memory_response(uid, pq["q"])
-                memory.add_conv(uid, "assistant", result)
-                return result
-            if msg_lower in ["voice", "voise"]:
-                del self.pending_q[uid]
-                result = self._multi_source_answer(uid, pq["q"])
-                if not result: result = self._memory_response(uid, pq["q"])
-                memory.add_conv(uid, "assistant", result)
-                if bot and chat_id and result:
-                    vp = self._gen_voice(result[:400])
-                    if vp:
-                        bot.send_voice(chat_id, vp)
-                        try: os.remove(vp)
-                        except: pass
-                    else:
-                        bot.send_msg(chat_id, f"🔊 Voice unavailable, here's the text:\n\n{result[:2000]}")
-                return result
-            if msg_lower in ["image", "img", "picture", "photo"]:
-                del self.pending_q[uid]
-                result = self._multi_source_answer(uid, pq["q"])
-                if not result: result = self._memory_response(uid, pq["q"])
-                memory.add_conv(uid, "assistant", result)
-                if bot and chat_id:
-                    self._cmd_imagine(uid, pq["q"], bot, chat_id)
-                return result
-            if msg_lower in ["file", "doc", "document"]:
-                del self.pending_q[uid]
-                result = self._multi_source_answer(uid, pq["q"])
-                if not result: result = self._memory_response(uid, pq["q"])
-                memory.add_conv(uid, "assistant", result)
-                if bot and chat_id and result:
-                    bot.send_text_as_file(chat_id, result, "answer.txt", "Here's your answer")
-                return result
-            # Not a format choice — treat as new question
-            del self.pending_q[uid]
+            fmts = {"text": "text", "txt": "text", "voice": "voice", "voise": "voice",
+                    "image": "image", "img": "image", "picture": "image", "photo": "image",
+                    "file": "file", "doc": "file", "document": "file"}
+            if msg_lower in fmts:
+                return self._deliver(uid, fmts[msg_lower], bot, chat_id)
+            pq = self.pending_q.pop(uid)
+            if len(msg_lower.split()) < 2 or self._is_smalltalk(msg_lower):
+                self.pending_q[uid] = pq
 
-        # Ask format for substantive messages
+        # Substantive question → research once, show formats
         if len(msg_lower.split()) >= 2 and not self._is_smalltalk(msg_lower):
-            self.pending_q[uid] = {"q": msg, "time": time.time()}
+            sources, conclusion = self._research(uid, msg)
+            self.pending_q[uid] = {"q": msg, "topic": msg, "sources": sources, "result": conclusion, "time": time.time()}
             if bot and chat_id:
-                bot.send_buttons(chat_id, "📤 Choose format:", [
+                bot.send_buttons(chat_id, f"💡 *{conclusion[:150]}*\n\n📤 Choose format:", [
                     ("📝 Text", f"ans_text_{uid}"),
                     ("🎤 Voice", f"ans_voice_{uid}"),
                     ("🖼 Image", f"ans_image_{uid}"),
                     ("📎 File", f"ans_file_{uid}")
                 ])
                 return None
-            return "📤 Reply with:\n`text`\n`voice`\n`image`\n`file`"
 
-        # ── Multi-source AI: search → synthesize ──
-        result = self._multi_source_answer(uid, msg)
-        if result:
-            memory.add_conv(uid, "assistant", result)
-            return result
+        # Short/smalltalk → direct answer
+        result = self._memory_response(uid, msg)
+        memory.add_conv(uid, "assistant", result)
+        return result
 
         reply = self._memory_response(uid, msg)
         memory.add_conv(uid, "assistant", reply)
@@ -351,62 +351,14 @@ class AIEngine:
 
     def handle_callback(self, uid, callback_data, chat_id=None, bot=None,
                         callback_id=None, msg_id=None):
-        """Handle inline button callback for format selection"""
         parts = callback_data.split("_", 2)
         if len(parts) < 3 or parts[0] != "ans":
             return None
         fmt = parts[1]
-        qdata = self.pending_q.get(uid)
-        if not qdata:
-            if bot and chat_id and callback_id:
-                bot.answer_callback(callback_id, "This question expired, ask again!")
-            return None
-
-        q = qdata["q"]
-        del self.pending_q[uid]
-
-        # Remove the buttons (edit message to show processing)
         if bot and chat_id and msg_id:
             icons = {"text": "📝", "voice": "🎤", "image": "🖼️", "file": "📎"}
-            icon = icons.get(fmt, "⏳")
-            bot.edit_text(chat_id, msg_id, f"{icon} Generating {fmt} answer...")
-
-        result = self._multi_source_answer(uid, q)
-        if not result:
-            result = self._memory_response(uid, q)
-        memory.add_conv(uid, "assistant", result)
-
-        if fmt == "text":
-            if bot and chat_id:
-                if callback_id:
-                    bot.answer_callback(callback_id, "")
-                bot.send_msg(chat_id, result)
-            return None
-        elif fmt == "voice":
-            if bot and chat_id:
-                if callback_id:
-                    bot.answer_callback(callback_id, "Generating voice...")
-                vp = self._gen_voice(result[:400])
-                if vp:
-                    bot.send_voice(chat_id, vp)
-                    try: os.remove(vp)
-                    except: pass
-                else:
-                    bot.send_msg(chat_id, f"🔊 Voice unavailable, here's the text:\n\n{result[:2000]}")
-            return None
-        elif fmt == "image":
-            if bot and chat_id:
-                if callback_id:
-                    bot.answer_callback(callback_id, "Generating image...")
-                self._cmd_imagine(uid, q, bot, chat_id)
-            return None
-        elif fmt == "file":
-            if bot and chat_id:
-                if callback_id:
-                    bot.answer_callback(callback_id, "")
-                bot.send_text_as_file(chat_id, result, "answer.txt", "Here's your answer")
-            return None
-        return result
+            bot.edit_text(chat_id, msg_id, f"{icons.get(fmt, '⏳')} Generating {fmt} answer...")
+        return self._deliver(uid, fmt, bot, chat_id, callback_id, msg_id)
 
     def _is_smalltalk(self, msg):
         t = msg.strip().lower()
@@ -1000,7 +952,7 @@ main();
         if not text:
             return "Usage: `say [text]` or `in voice [text]`"
 
-        reply = self._multi_source_answer(uid, text)
+        sources, reply = self._research(uid, text)
         if not reply:
             reply = self._memory_response(uid, text)
 
@@ -1258,18 +1210,19 @@ main();
         except:
             return None
 
-    def _multi_source_answer(self, uid, msg):
+    def _research(self, uid, msg):
+        """Steps 1-4: collect from web, AI, Wikipedia, analyze. Returns (sources_list, conclusion_str)"""
         words = msg.strip().split()
         if len(words) < 2:
-            return None
+            return [], self._memory_response(uid, msg)
         topic = self._extract_topic(msg) or msg.strip().rstrip("?!.")
-        steps = []
-        name = memory.get_facts(uid).get("name", {}).get("v", "")
 
-        # ═══ Step 1: Web Search (DuckDuckGo / Google) ═══
+        sources = []
+
+        # Step 1: Web Search
         try:
-            import urllib.parse
-            encoded = urllib.parse.quote(topic)
+            import urllib.parse as _up
+            encoded = _up.quote(topic)
             snippets = []
             r = urlopen(Request(f"https://api.duckduckgo.com/?q={encoded}&format=json&no_html=1",
                                 headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
@@ -1287,10 +1240,10 @@ main();
                     clean = _re.sub(r'<[^>]+>', '', s).strip()
                     if clean: snippets.append(clean[:250])
             if snippets:
-                steps.append(("🌐 1. Web Search", "\n".join(f"• {s}" for s in snippets[:4])))
+                sources.append(("Web", "\n".join(snippets[:4])))
         except: pass
 
-        # ═══ Step 2: Ask AI Chatbot (HuggingFace) ═══
+        # Step 2: AI Chatbot
         try:
             models = ["microsoft/Phi-3-mini-4k-instruct", "HuggingFaceH4/zephyr-7b-beta"]
             for model in models:
@@ -1306,68 +1259,63 @@ main();
                             for m in ["\nYou:", "User:"]:
                                 idx = text.find(m)
                                 if idx >= 0: text = text[idx + len(m):].strip(); break
-                            steps.append(("🤖 2. AI Answer", text[:500]))
+                            sources.append(("AI", text[:500]))
                             break
                 except: continue
         except: pass
 
-        # ═══ Step 3: Wikipedia ═══
+        # Step 3: Wikipedia
         try:
-            import urllib.parse
-            encoded = urllib.parse.quote(topic)
+            import urllib.parse as _up
+            encoded = _up.quote(topic)
             resp = urlopen(Request(f"https://en.wikipedia.org/w/api.php?action=opensearch&search={encoded}&limit=3&format=json",
                                    headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
             data = json.loads(resp.read())
             if data and data[1]:
-                pt = urllib.parse.quote(data[1][0])
+                pt = _up.quote(data[1][0])
                 resp2 = urlopen(Request(f"https://en.wikipedia.org/api/rest_v1/page/summary/{pt}",
                                         headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
                 d2 = json.loads(resp2.read())
                 if d2.get("extract"):
-                    steps.append(("📚 3. Wikipedia", d2["extract"][:700]))
+                    sources.append(("Wikipedia", d2["extract"][:700]))
         except: pass
 
-        # ═══ Step 4: Cross-Source Analysis ═══
-        if steps:
-            all_info = "\n".join(f"[{s[0]}] {s[1][:200]}" for s in steps)
-            analysis = self._query_free_ai(uid, f"Analyze these sources about {topic}", all_info)
+        # Step 4: Cross-Source Analysis
+        if sources:
+            evidence = "\n".join(f"[{s[0]}] {s[1][:200]}" for s in sources)
+            analysis = self._query_free_ai(uid, f"Analyze sources about: {topic}", evidence)
             if not analysis and self.ollama_ready:
-                analysis = self._query_ollama(uid, f"Analyze sources about {topic}", all_info)
-            steps.append(("🔍 4. Analysis", (analysis or "Multiple sources provide consistent information.")[:500]))
+                analysis = self._query_ollama(uid, f"Analyze: {topic}", evidence)
+            if analysis:
+                sources.append(("Analysis", analysis[:500]))
 
-        # ═══ Step 5: Conclusion ═══
-        if steps:
-            evidence = "\n".join(f"[{s[0]}] {s[1][:150]}" for s in steps)
-            conclusion = self._query_free_ai(uid, f"Conclude about: {topic}", evidence)
+        # Step 5: Conclusion
+        conclusion = None
+        if sources:
+            all_text = "\n".join(f"{s[1][:300]}" for s in sources)
+            conclusion = self._query_free_ai(uid, f"Write a clear answer about: {topic}", all_text)
             if not conclusion and self.ollama_ready:
-                conclusion = self._query_ollama(uid, f"Short conclusion: {topic}", evidence)
-            if not conclusion:
-                last = steps[-1][1][:200]
-                conclusion = f"Based on the research, {topic} is well-documented. {last}"
-            steps.append(("✅ 5. Conclusion", conclusion[:500]))
+                conclusion = self._query_ollama(uid, f"Answer concisely: {topic}", all_text)
+            if not conclusion and sources:
+                wrap = sources[-1]
+                conclusion = f"{wrap[1][:600]}"
+        if not conclusion:
+            conclusion = self._memory_response(uid, msg)
 
-        # ── Build answer ──
-        icons = {"1": "🌐", "2": "🤖", "3": "📚", "4": "🔍", "5": "✅"}
-        if steps:
-            memory.learn_fact(uid, f"about_{topic[:30]}", str(steps)[:500])
-            memory.learn_fact(uid, "last_topic", topic)
-            lines = [f"*{topic.title()}*"]
-            for i, (label, text) in enumerate(steps, 1):
-                icon = icons.get(str(i), "▸")
-                lines.append(f"\n{icon} *{label.split('. ', 1)[-1] if '. ' in label else label}*")
-                lines.append(f" {text[:350]}")
-            lines.append(f"\n{'─'*30}\n*6. 📤 Choose format below*")
-            return "\n".join(lines)[:3500]
+        memory.learn_fact(uid, f"about_{topic[:30]}", conclusion[:500])
+        memory.learn_fact(uid, "last_topic", topic)
+        return sources, conclusion
 
-        # Fallback
-        if len(words) > 3:
-            for n in range(3, 1, -1):
-                shorter = " ".join(words[-n:]).rstrip("?!.")
-                if shorter != topic:
-                    return self._multi_source_answer(uid, shorter)
-        ai_reply = self._query_free_ai(uid, msg, "")
-        if ai_reply: return ai_reply
-        return f"🤔 Interesting! I don't have enough info on '{topic}' yet."
+    def _conclude(self, uid, topic, sources):
+        if sources:
+            all_text = "\n".join(f"{s[1][:300]}" for s in sources)
+            c = self._query_free_ai(uid, f"Answer concisely about: {topic}", all_text)
+            if c: return c
+            if self.ollama_ready:
+                c = self._query_ollama(uid, f"Answer: {topic}", all_text)
+                if c: return c
+            return sources[-1][1][:600]
+        return self._memory_response(uid, topic)
 
     def _memory_response(self, uid, msg):
         msg_lower = msg.lower().strip()
