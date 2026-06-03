@@ -1249,45 +1249,38 @@ main();
         name = memory.get_facts(uid).get("name", {}).get("v", "")
 
         # ═══ Step 1: Web Search (DuckDuckGo / Google) ═══
-        step1 = []
         try:
             import urllib.parse
             encoded = urllib.parse.quote(topic)
-            # DuckDuckGo API
+            snippets = []
             r = urlopen(Request(f"https://api.duckduckgo.com/?q={encoded}&format=json&no_html=1",
                                 headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
             data = json.loads(r.read())
             txt = data.get("AbstractText", "") or data.get("Answer", "")
-            if txt:
-                step1.append(txt[:600])
-            for rt in data.get("RelatedTopics", [])[:3]:
-                if isinstance(rt, dict) and rt.get("Text"):
-                    step1.append(rt["Text"][:400])
-            # DuckDuckGo lite
+            if txt: snippets.append(txt[:500])
+            for rt in data.get("RelatedTopics", [])[:2]:
+                if isinstance(rt, dict) and rt.get("Text"): snippets.append(rt["Text"][:300])
             html = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0", "--max-time", "5",
                                    f"https://lite.duckduckgo.com/lite/?q={encoded}"],
                                   capture_output=True, text=True, timeout=8)
             if html.returncode == 0:
                 import re as _re
-                for s in _re.findall(r'class="result-snippet".*?>(.*?)</td>', html.stdout, _re.DOTALL)[:3]:
+                for s in _re.findall(r'class="result-snippet".*?>(.*?)</td>', html.stdout, _re.DOTALL)[:2]:
                     clean = _re.sub(r'<[^>]+>', '', s).strip()
-                    if clean: step1.append(clean[:300])
-        except:
-            pass
-        if step1:
-            steps.append(("🌐 1. Web Search Results", "\n".join(f"• {s}" for s in step1[:5])))
+                    if clean: snippets.append(clean[:250])
+            if snippets:
+                steps.append(("🌐 1. Web Search", "\n".join(f"• {s}" for s in snippets[:4])))
+        except: pass
 
         # ═══ Step 2: Ask AI Chatbot (HuggingFace) ═══
-        step2 = None
         try:
-            prompt = f"User asked: {topic}\nProvide key facts and a clear answer based on your knowledge."
             models = ["microsoft/Phi-3-mini-4k-instruct", "HuggingFaceH4/zephyr-7b-beta"]
             for model in models:
                 try:
-                    d = json.dumps({"inputs": prompt, "parameters": {"max_new_tokens": 300, "temperature": 0.7}}).encode()
-                    req = Request(f"https://api-inference.huggingface.co/models/{model}",
-                                  data=d, headers={"Content-Type": "application/json"})
-                    resp = urlopen(req, timeout=20)
+                    d = json.dumps({"inputs": f"User asked: {topic}\nProvide key facts clearly.",
+                                    "parameters": {"max_new_tokens": 250, "temperature": 0.7}}).encode()
+                    resp = urlopen(Request(f"https://api-inference.huggingface.co/models/{model}",
+                                           data=d, headers={"Content-Type": "application/json"}), timeout=15)
                     result = json.loads(resp.read())
                     if isinstance(result, list) and result:
                         text = result[0].get("generated_text", "")
@@ -1295,22 +1288,17 @@ main();
                             for m in ["\nYou:", "User:"]:
                                 idx = text.find(m)
                                 if idx >= 0: text = text[idx + len(m):].strip(); break
-                            step2 = text[:600]
+                            steps.append(("🤖 2. AI Answer", text[:500]))
                             break
-                except:
-                    continue
-        except:
-            pass
-        if step2:
-            steps.append(("🤖 2. AI Assistant Answer", step2))
+                except: continue
+        except: pass
 
-        # ═══ Step 3: Wikipedia Search ═══
-        step3 = None
+        # ═══ Step 3: Wikipedia ═══
         try:
             import urllib.parse
             encoded = urllib.parse.quote(topic)
-            url = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={encoded}&limit=3&format=json"
-            resp = urlopen(Request(url, headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
+            resp = urlopen(Request(f"https://en.wikipedia.org/w/api.php?action=opensearch&search={encoded}&limit=3&format=json",
+                                   headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
             data = json.loads(resp.read())
             if data and data[1]:
                 pt = urllib.parse.quote(data[1][0])
@@ -1318,76 +1306,50 @@ main();
                                         headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
                 d2 = json.loads(resp2.read())
                 if d2.get("extract"):
-                    step3 = d2["extract"][:800]
-                    page_url = d2.get("content_urls", {}).get("desktop", {}).get("page",
-                              f"https://en.wikipedia.org/wiki/{pt}")
-                    step3 += f"\n[Read more]({page_url})"
-        except:
-            pass
-        if step3:
-            steps.append(("📚 3. Wikipedia Summary", step3))
+                    steps.append(("📚 3. Wikipedia", d2["extract"][:700]))
+        except: pass
 
-        # ═══ Step 4: Analyze Answers ═══
+        # ═══ Step 4: Cross-Source Analysis ═══
         if steps:
-            all_info = "\n\n".join(f"[{s[0]}] {s[1][:300]}" for s in steps)
+            all_info = "\n".join(f"[{s[0]}] {s[1][:200]}" for s in steps)
             analysis = self._query_free_ai(uid, f"Analyze these sources about {topic}", all_info)
             if not analysis and self.ollama_ready:
                 analysis = self._query_ollama(uid, f"Analyze sources about {topic}", all_info)
-            if analysis:
-                steps.append(("🔍 4. Cross-Source Analysis", analysis[:600]))
-            else:
-                steps.append(("🔍 4. Cross-Source Analysis",
-                             "Sources agree on key facts. Multiple sources confirm the information above."))
+            steps.append(("🔍 4. Analysis", (analysis or "Multiple sources provide consistent information.")[:500]))
 
-        # ═══ Step 5: Conclusion (bot's own reasoning) ═══
-        all_evidence = "\n\n".join(f"[{s[0]}] {s[1][:200]}" for s in steps)
-        conclusion = self._query_free_ai(uid, f"Conclude concisely: {topic}. Based on evidence.", all_evidence)
-        if not conclusion and self.ollama_ready:
-            conclusion = self._query_ollama(uid, f"Give a short conclusion about: {topic}", all_evidence)
-        if conclusion:
-            steps.append(("✅ 5. My Conclusion", conclusion[:600]))
-        else:
-            steps.append(("✅ 5. My Conclusion",
-                         f"Based on the information gathered, {topic} is a well-documented topic "
-                         f"with reliable sources available. The web and AI sources provide consistent information."))
+        # ═══ Step 5: Conclusion ═══
+        if steps:
+            evidence = "\n".join(f"[{s[0]}] {s[1][:150]}" for s in steps)
+            conclusion = self._query_free_ai(uid, f"Conclude about: {topic}", evidence)
+            if not conclusion and self.ollama_ready:
+                conclusion = self._query_ollama(uid, f"Short conclusion: {topic}", evidence)
+            if not conclusion:
+                last = steps[-1][1][:200]
+                conclusion = f"Based on the research, {topic} is well-documented. {last}"
+            steps.append(("✅ 5. Conclusion", conclusion[:500]))
 
-        # Save to memory
-        memory.learn_fact(uid, f"about_{topic[:30]}", all_evidence[:500])
-        memory.learn_fact(uid, "last_topic", topic)
+        # ── Build answer ──
+        icons = {"1": "🌐", "2": "🤖", "3": "📚", "4": "🔍", "5": "✅"}
+        if steps:
+            memory.learn_fact(uid, f"about_{topic[:30]}", str(steps)[:500])
+            memory.learn_fact(uid, "last_topic", topic)
+            lines = [f"*{topic.title()}*"]
+            for i, (label, text) in enumerate(steps, 1):
+                icon = icons.get(str(i), "▸")
+                lines.append(f"\n{icon} *{label.split('. ', 1)[-1] if '. ' in label else label}*")
+                lines.append(f" {text[:350]}")
+            lines.append(f"\n{'─'*30}\n*6. 📤 Choose format below*")
+            return "\n".join(lines)[:3500]
 
-        # ═══ Build final answer ═══
-        reply_lines = [f"*{topic.title()}*\n"]
-        for label, text in steps:
-            if label.startswith("1.") or label.startswith("🌐"):
-                reply_lines.append(f"┃ 🌐 *{label.split(' ', 1)[1]}*")
-            elif label.startswith("2.") or label.startswith("🤖"):
-                reply_lines.append(f"┃ 🤖 *{label.split(' ', 1)[1]}*")
-            elif label.startswith("3.") or label.startswith("📚"):
-                reply_lines.append(f"┃ 📚 *{label.split(' ', 1)[1]}*")
-            elif label.startswith("4.") or label.startswith("🔍"):
-                reply_lines.append(f"┃ 🔍 *{label.split(' ', 1)[1]}*")
-            elif label.startswith("5.") or label.startswith("✅"):
-                reply_lines.append(f"┃ ✅ *{label.split(' ', 1)[1]}*")
-            else:
-                reply_lines.append(f"┃ *{label}*")
-            reply_lines.append(f"┃ {text[:350]}")
-            reply_lines.append("┃")
-        reply_lines.append("╰━ *6. 📤 Choose format below*")
-        return "\n".join(reply_lines)[:3500]
-
-        # Fallback if no sources found
+        # Fallback
         if len(words) > 3:
             for n in range(3, 1, -1):
                 shorter = " ".join(words[-n:]).rstrip("?!.")
                 if shorter != topic:
                     return self._multi_source_answer(uid, shorter)
-
-        facts = memory.get_facts(uid)
-        name = facts.get("name", {}).get("v", "")
         ai_reply = self._query_free_ai(uid, msg, "")
-        if ai_reply:
-            return ai_reply
-        return f"🤔 That's an interesting question{' ' + name if name else ''}! I don't have enough info to give a complete answer, but I'm here to help you explore it further. 🔍"
+        if ai_reply: return ai_reply
+        return f"🤔 Interesting! I don't have enough info on '{topic}' yet."
 
     def _memory_response(self, uid, msg):
         msg_lower = msg.lower().strip()
