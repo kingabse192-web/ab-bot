@@ -228,11 +228,15 @@ class AIEngine:
     def _deliver(self, uid, fmt, bot, chat_id, callback_id=None, msg_id=None):
         pq = self.pending_q.pop(uid, None)
         if not pq:
-            if bot and callback_id: bot.answer_callback(callback_id, "Question expired, ask again!")
+            if bot and callback_id: bot.answer_callback(callback_id, "Expired, ask again!")
             return None
-        result = pq.get("result") or self._conclude(uid, pq["topic"], pq.get("sources", []))
         q = pq["q"]
-        memory.add_conv(uid, "assistant", result)
+        result = pq.get("result")
+        if not result:
+            sources, result = self._research(uid, q)
+            pq["result"] = result
+            pq["sources"] = sources
+            memory.add_conv(uid, "assistant", result)
 
         if fmt == "text":
             if bot and chat_id:
@@ -249,7 +253,7 @@ class AIEngine:
                     except:
                         pass
                 else:
-                    bot.send_msg(chat_id, f"🔊 Voice unavailable:\n\n{result[:2000]}")
+                    bot.send_msg(chat_id, f"🔊 {result[:2000]}")
         elif fmt == "image":
             if bot and chat_id:
                 if callback_id: bot.answer_callback(callback_id, "Generating image...")
@@ -327,12 +331,11 @@ class AIEngine:
             if len(msg_lower.split()) < 2 or self._is_smalltalk(msg_lower):
                 self.pending_q[uid] = pq
 
-        # Substantive question → research once, show formats
+        # Substantive question → show format buttons (research happens after you pick)
         if len(msg_lower.split()) >= 2 and not self._is_smalltalk(msg_lower):
-            sources, conclusion = self._research(uid, msg)
-            self.pending_q[uid] = {"q": msg, "topic": msg, "sources": sources, "result": conclusion, "time": time.time()}
+            self.pending_q[uid] = {"q": msg, "time": time.time()}
             if bot and chat_id:
-                bot.send_buttons(chat_id, f"💡 *{conclusion[:150]}*\n\n📤 Choose format:", [
+                bot.send_buttons(chat_id, "📤 Choose format:", [
                     ("📝 Text", f"ans_text_{uid}"),
                     ("🎤 Voice", f"ans_voice_{uid}"),
                     ("🖼 Image", f"ans_image_{uid}"),
