@@ -1213,8 +1213,33 @@ main();
         except:
             return None
 
+    def _build_answer(self, sources, topic):
+        if not sources:
+            return None
+        # Try AI synthesis first
+        all_text = "\n".join(f"{s[1][:300]}" for s in sources)
+        ai = self._query_free_ai(0, f"Answer concisely about: {topic}", all_text)
+        if ai and len(ai) > 30 and topic.lower() in ai.lower():
+            return ai[:2000]
+        if self.ollama_ready:
+            ai = self._query_ollama(0, f"Answer: {topic}", all_text)
+            if ai and len(ai) > 30:
+                return ai[:2000]
+        # Manual synthesis: pick best source
+        for src in sources:
+            if src[0] == "Wikipedia" and len(src[1]) > 100:
+                return src[1][:1500]
+        for src in sources:
+            if src[0] == "Web" and len(src[1]) > 100:
+                return src[1][:1500]
+        for src in sources:
+            if src[0] == "AI" and len(src[1]) > 50:
+                return src[1][:1500]
+        if sources:
+            return sources[0][1][:1000]
+        return None
+
     def _research(self, uid, msg):
-        """Steps 1-4: collect from web, AI, Wikipedia, analyze. Returns (sources_list, conclusion_str)"""
         words = msg.strip().split()
         if len(words) < 2:
             return [], self._memory_response(uid, msg)
@@ -1227,21 +1252,25 @@ main();
             import urllib.parse as _up
             encoded = _up.quote(topic)
             snippets = []
-            r = urlopen(Request(f"https://api.duckduckgo.com/?q={encoded}&format=json&no_html=1",
-                                headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
-            data = json.loads(r.read())
-            txt = data.get("AbstractText", "") or data.get("Answer", "")
-            if txt: snippets.append(txt[:500])
-            for rt in data.get("RelatedTopics", [])[:2]:
-                if isinstance(rt, dict) and rt.get("Text"): snippets.append(rt["Text"][:300])
-            html = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0", "--max-time", "5",
-                                   f"https://lite.duckduckgo.com/lite/?q={encoded}"],
-                                  capture_output=True, text=True, timeout=8)
-            if html.returncode == 0:
-                import re as _re
-                for s in _re.findall(r'class="result-snippet".*?>(.*?)</td>', html.stdout, _re.DOTALL)[:2]:
-                    clean = _re.sub(r'<[^>]+>', '', s).strip()
-                    if clean: snippets.append(clean[:250])
+            try:
+                r = urlopen(Request(f"https://api.duckduckgo.com/?q={encoded}&format=json&no_html=1",
+                                    headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
+                data = json.loads(r.read())
+                txt = data.get("AbstractText", "") or data.get("Answer", "")
+                if txt: snippets.append(txt[:500])
+                for rt in data.get("RelatedTopics", [])[:2]:
+                    if isinstance(rt, dict) and rt.get("Text"): snippets.append(rt["Text"][:300])
+            except: pass
+            try:
+                html = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0", "--max-time", "5",
+                                       f"https://lite.duckduckgo.com/lite/?q={encoded}"],
+                                      capture_output=True, text=True, timeout=8)
+                if html.returncode == 0:
+                    import re as _re
+                    for s in _re.findall(r'class="result-snippet".*?>(.*?)</td>', html.stdout, _re.DOTALL)[:2]:
+                        clean = _re.sub(r'<[^>]+>', '', s).strip()
+                        if clean: snippets.append(clean[:250])
+            except: pass
             if snippets:
                 sources.append(("Web", "\n".join(snippets[:4])))
         except: pass
@@ -1251,8 +1280,8 @@ main();
             models = ["microsoft/Phi-3-mini-4k-instruct", "HuggingFaceH4/zephyr-7b-beta"]
             for model in models:
                 try:
-                    d = json.dumps({"inputs": f"User asked: {topic}\nProvide key facts clearly.",
-                                    "parameters": {"max_new_tokens": 250, "temperature": 0.7}}).encode()
+                    d = json.dumps({"inputs": f"User asked about {topic}\nKey facts:",
+                                    "parameters": {"max_new_tokens": 200, "temperature": 0.5}}).encode()
                     resp = urlopen(Request(f"https://api-inference.huggingface.co/models/{model}",
                                            data=d, headers={"Content-Type": "application/json"}), timeout=15)
                     result = json.loads(resp.read())
@@ -1262,7 +1291,9 @@ main();
                             for m in ["\nYou:", "User:"]:
                                 idx = text.find(m)
                                 if idx >= 0: text = text[idx + len(m):].strip(); break
-                            sources.append(("AI", text[:500]))
+                            text = text.replace("Key facts:", "").strip()
+                            if len(text) > 20:
+                                sources.append(("AI", text[:500]))
                             break
                 except: continue
         except: pass
@@ -1283,31 +1314,24 @@ main();
                     sources.append(("Wikipedia", d2["extract"][:700]))
         except: pass
 
-        # Step 4: Cross-Source Analysis
-        if sources:
-            evidence = "\n".join(f"[{s[0]}] {s[1][:200]}" for s in sources)
-            analysis = self._query_free_ai(uid, f"Analyze sources about: {topic}", evidence)
-            if not analysis and self.ollama_ready:
-                analysis = self._query_ollama(uid, f"Analyze: {topic}", evidence)
-            if analysis:
-                sources.append(("Analysis", analysis[:500]))
+        # Build answer
+        conclusion = self._build_answer(sources, topic)
+        if conclusion:
+            memory.learn_fact(uid, f"about_{topic[:30]}", conclusion[:500])
+            memory.learn_fact(uid, "last_topic", topic)
+            return sources, conclusion
 
-        # Step 5: Conclusion
-        conclusion = None
-        if sources:
-            all_text = "\n".join(f"{s[1][:300]}" for s in sources)
-            conclusion = self._query_free_ai(uid, f"Write a clear answer about: {topic}", all_text)
-            if not conclusion and self.ollama_ready:
-                conclusion = self._query_ollama(uid, f"Answer concisely: {topic}", all_text)
-            if not conclusion and sources:
-                wrap = sources[-1]
-                conclusion = f"{wrap[1][:600]}"
-        if not conclusion:
-            conclusion = self._memory_response(uid, msg)
+        # Fallback: retry with shorter query
+        if len(words) > 3:
+            for n in range(3, 1, -1):
+                shorter = " ".join(words[-n:]).rstrip("?!.")
+                if shorter != topic:
+                    return self._research(uid, shorter)
 
-        memory.learn_fact(uid, f"about_{topic[:30]}", conclusion[:500])
-        memory.learn_fact(uid, "last_topic", topic)
-        return sources, conclusion
+        ai = self._query_free_ai(uid, msg, "")
+        if ai:
+            return [], ai
+        return [], self._memory_response(uid, msg)
 
     def _conclude(self, uid, topic, sources):
         if sources:
