@@ -1679,11 +1679,10 @@ main();
         return self._answer_anything(msg, profile, name)
 
     def _answer_anything(self, msg, profile="", name=""):
-        """Always answer directly — follows the 4-step process from instructions"""
+        """Answer fluently and naturally — like a real conversation"""
         import random
         t = msg.lower().strip().rstrip("?!.")
         words = t.split()
-        # Step 1: Analyze & Understand - detect intent
         is_question = any(t.startswith(w) for w in ["what", "who", "where", "when", "why", "how", "is", "are", "do", "does", "did", "can", "will", "would", "could", "should", "have", "has", "am", "was", "were", "shall"])
         is_how = t.startswith("how")
         is_why = t.startswith("why")
@@ -1694,28 +1693,86 @@ main();
         is_yesno = t.startswith(("is ", "are ", "do ", "does ", "did ", "can ", "will ", "would ", "could ", "should ", "have ", "has ", "am ", "was ", "were "))
         stopwords = {"what", "who", "where", "when", "why", "how", "is", "are", "do", "does", "did", "can", "will", "would", "could", "should", "have", "has", "am", "was", "were", "shall", "the", "a", "an", "in", "on", "at", "to", "for", "of", "with", "by", "from", "you", "your", "me", "my", "i", "we", "our", "it", "its", "they", "them", "their", "he", "she", "him", "her", "his"}
         subject_words = [w for w in words if w not in stopwords and len(w) > 2]
-        subject = " ".join(subject_words[:5]) if subject_words else "that"
+        subject = " ".join(subject_words[:3]) if subject_words else "that"
         topic = subject_words[0] if subject_words else subject
+        greeting_words = ["hi", "hello", "hey", "yo", "sup", "heyo", "hiya", "howdy", "whats up", "wassup", "wasup", "heyy"]
+        if t in greeting_words or t.rstrip("!") in greeting_words:
+            return random.choice([
+                f"Hey{' ' + name if name else ''}! What's going on?",
+                f"Hi{' ' + name if name else ''}! How can I help?",
+                f"Hey there{' ' + name if name else ''}! What's up?",
+            ])
+        if t in ["how are you", "how r u", "how do you do", "how are you doing"]:
+            return random.choice([
+                "I'm doing great, thanks! How about you?",
+                "All good here! What's happening with you?",
+                "I'm feeling good! What's on your mind?",
+            ])
+        thanks_words = ["thanks", "thank you", "thx", "ty", "thankyou", "thank u", "thanks a lot"]
+        if t in thanks_words:
+            return random.choice([
+                "You're welcome! Happy to help.",
+                "Anytime! Let me know if you need anything else.",
+                "No problem at all!",
+            ])
+        bye_words = ["bye", "goodbye", "see you", "cya", "see ya", "later", "catch you later"]
+        if t in bye_words:
+            return f"Take care{' ' + name if name else ''}! Talk to you later."
+        ok_words = ["ok", "okay", "k", "kk", "cool", "nice", "good", "great", "fine", "alright", "sure", "yeah", "yes", "yep", "got it", "understood"]
+        if t in ok_words:
+            return random.choice(["Got it!", "Cool!", "Perfect!", "You got it!", "Sounds good!"])
+        if t in ["i love you", "love you", "i luv you"]:
+            return f"Aww, I love you too{' ' + name if name else ''}! You're the best!"
+        if t in ["i miss you", "miss you"]:
+            return f"Miss you too{' ' + name if name else ''}! So good to hear from you."
+        # Profile-based answer
+        if name and profile and any(w in profile.lower() for w in subject_words):
+            return f"About that — {profile[:400]}"
+        # Question answering with natural variety
         if is_question:
-            if name and profile and topic in profile.lower():
-                return f"About *{subject}* — here's what I know: {profile[:400]}"
             if is_yesno:
-                return f"Yes, regarding *{subject}* — {subject} is a complex topic. Here's what I understand: it depends on context. Tell me more and I'll give you a precise answer."
+                templates = [
+                    f"That's a good question about *{subject}*. I'd say yes, it really depends on the situation though. What specifically are you wondering about?",
+                    f"Regarding *{subject}* — I think so, but there are different ways to look at it. Tell me more about what you're trying to figure out.",
+                ]
+                return random.choice(templates)
             if is_why:
-                return f"Great question about *{subject}*! There are several reasons. Mainly because the underlying principles involve core mechanisms that shape how things work. Want me to explain more?"
+                templates = [
+                    f"Great question! The reason behind *{subject}* comes down to a few key factors. It's mainly about how things are structured. Want me to break it down more?",
+                    f"Why *{subject}*? That's something a lot of people wonder about. The short answer is it has to do with the core principles involved. I can go deeper if you want!",
+                ]
+                return random.choice(templates)
             if is_how:
-                return f"Here's how *{subject}* works: it involves several steps and components working together. The key is understanding the foundational concepts first. I'm ready to go deep on this!"
+                templates = [
+                    f"Here's how *{subject}* works — it's actually pretty straightforward once you understand the basics. Start with understanding the main components, and it all clicks from there. Want me to explain step by step?",
+                    f"Good question! *{subject}* works through a series of connected steps. The key is knowing where to start. I can walk you through the whole process if you'd like!",
+                ]
+                return random.choice(templates)
             if is_what:
-                return f"*{subject}* refers to a concept in its domain. Here's the core idea: it's something that has specific characteristics and plays an important role. If you want, I can elaborate further."
+                templates = [
+                    f"*{subject}* is a concept that covers quite a bit of ground. At its core, it's about understanding how things fit together in this space. Want me to go into more detail?",
+                    f"So *{subject}* — think of it as something that plays a key role in its area. It's one of those topics that gets more interesting the deeper you go. What would you like to know specifically?",
+                ]
+                return random.choice(templates)
             if is_where:
-                return f"*{subject}* can be found in various contexts depending on what exactly you're looking for. If you give me more specifics, I can pinpoint the exact location or source."
+                return f"*{subject}* can be found in a few different places depending on what you're looking for. Could you be more specific about which aspect you're interested in?"
             if is_who:
-                return f"*{subject}* — that refers to someone/something notable. Here's what I can tell you: they are known for their contributions and impact. Want more details?"
-            return f"About *{subject}* — here's my take: it's an interesting topic with many facets. The best approach depends on what specifically you want to understand."
-        else:
-            if profile and name:
-                return f"I hear you on *{topic}*. That's an interesting point! Tell me more, {name}."
-            return f"Got it — *{topic}*. I'm listening, tell me more about it!"
+                return f"*{subject}* — that name comes up in discussions around their work and contributions. They're known for what they've done in their field. Want me to look into more details?"
+            return f"About *{subject}* — that's a really interesting topic. There's a lot to explore there. What specifically caught your attention?"
+        # Statements — conversational response
+        if profile and name:
+            templates = [
+                f"I hear you on that, {name}. Tell me more about what you think.",
+                f"That's interesting, {name}! What else is on your mind?",
+                f"I get what you're saying, {name}. Let's talk more about it.",
+            ]
+            return random.choice(templates)
+        templates = [
+            f"Got it — *{topic}*. Tell me more about it!",
+            f"I see what you mean about *{topic}*. What else?",
+            f"Interesting point about *{topic}*. Keep going!",
+        ]
+        return random.choice(templates)
 
     # ── Local conversational AI (learns from every chat) ──
     MEM_FILE = os.path.expanduser("~/.ab_chatmem.json")
