@@ -327,12 +327,16 @@ class AIEngine:
                     "file": "file", "doc": "file", "document": "file"}
             if msg_lower in fmts:
                 return self._deliver(uid, fmts[msg_lower], bot, chat_id)
-            pq = self.pending_q.pop(uid)
-            if len(msg_lower.split()) < 2 or self._is_smalltalk(msg_lower):
-                self.pending_q[uid] = pq
+            self.pending_q.pop(uid)
 
-        # Substantive question → show format buttons (research happens after you pick)
-        if len(msg_lower.split()) >= 2 and not self._is_smalltalk(msg_lower):
+        # Detect conversation mode
+        mode_desc, personality = self._detect_mode(msg)
+        is_research = mode_desc in ("agent", "teacher")
+        is_casual = mode_desc in ("brother", "partner", "friend")
+        is_question = msg_lower.endswith("?") or any(msg_lower.startswith(w) for w in ["what", "why", "how", "when", "where", "who", "can", "could", "will", "would", "do", "does", "did", "is", "are", "was", "were", "has", "have", "had", "tell", "show", "explain", "define", "describe"])
+
+        # Research question (agent/teacher mode or question-like) → format buttons
+        if is_research or (is_question and len(msg_lower.split()) >= 2 and not self._is_smalltalk(msg_lower)):
             self.pending_q[uid] = {"q": msg, "time": time.time()}
             if bot and chat_id:
                 bot.send_buttons(chat_id, "📤 Choose format:", [
@@ -340,10 +344,11 @@ class AIEngine:
                     ("🎤 Voice", f"ans_voice_{uid}"),
                     ("🖼 Image", f"ans_image_{uid}"),
                     ("📎 File", f"ans_file_{uid}")
+
                 ])
                 return None
 
-        # Short/smalltalk → direct answer
+        # Casual chat / emotional support → direct AI reply (no format buttons)
         result = self._memory_response(uid, msg)
         memory.add_conv(uid, "assistant", result)
         return result
