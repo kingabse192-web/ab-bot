@@ -120,8 +120,23 @@ def handle_update(bot, engine, update):
         bot.send_msg(chat_id, reply)
         return
 
-    # Text + media
+    # Handle file + "use this as prompt" / "my instructions" / etc.
     if has_media and text:
+        # Check if user wants this as instructions
+        if any(w in text.lower() for w in ["prompt", "instruction", "step", "use this", "follow", "my prompt", "stapes"]):
+            if "document" in msg:
+                d = msg["document"]
+                fid = d.get("file_id", "")
+                fname = d.get("file_name", "")
+                try:
+                    content = bot.download_file(fid)
+                    if content:
+                        memory.set_instructions(content)
+                        bot.send_msg(chat_id, f"✅ *Stored as instructions!* Read {len(content)} chars from `{fname}`\nI'll follow these steps from now on.")
+                        return None
+                except Exception as e:
+                    bot.send_msg(chat_id, f"❌ Failed to read file: {e}")
+                    return None
         text = f"[{media_type}] {text}"
 
     # Normal text response
