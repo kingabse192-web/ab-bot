@@ -6,6 +6,71 @@ logger = logging.getLogger("ab.engine")
 CODE_DIR = os.path.expanduser("~/ab_codes")
 
 
+class LangDetector:
+    SCRIPT_RANGES = {
+        "ar": (0x0600, 0x06FF), "fa": (0x0600, 0x06FF),
+        "zh": (0x4E00, 0x9FFF), "ja": (0x3040, 0x30FF),
+        "ko": (0xAC00, 0xD7AF), "ru": (0x0400, 0x04FF),
+        "hi": (0x0900, 0x097F), "th": (0x0E00, 0x0E7F),
+        "el": (0x0370, 0x03FF), "he": (0x0590, 0x05FF),
+    }
+    LANG_WORDS = {
+        "ar": ["مرحبا", "كيف", "شكرا", "ما", "هل", "هذا", "انا", "أنت", "على", "في", "من", "لا", "نعم", "أنا"],
+        "fr": ["bonjour", "merci", "comment", "je", "tu", "nous", "vous", "parle", "français", "oui", "non", "est", "pas", "avec", "dans"],
+        "es": ["hola", "gracias", "como", "que", "por", "para", "esta", "con", "más", "bien", "si", "no", "del", "las", "los"],
+        "de": ["hallo", "danke", "wie", "was", "ist", "das", "nicht", "mit", "und", "der", "die", "das", "ich", "du", "sie"],
+        "pt": ["olá", "obrigado", "como", "que", "para", "com", "mais", "bem", "sim", "não", "está", "por"],
+        "it": ["ciao", "grazie", "come", "che", "per", "con", "più", "bene", "si", "no", "è", "sono"],
+        "nl": ["hallo", "dank", "hoe", "wat", "is", "het", "niet", "met", "en", "de", "het", "een", "ik", "je"],
+        "tr": ["merhaba", "teşekkür", "nasıl", "ne", "bu", "ben", "sen", "ve", "bir", "için", "değil", "var"],
+        "id": ["halo", "terima", "bagaimana", "apa", "ini", "saya", "anda", "dan", "tidak", "ada"],
+        "ms": ["hai", "terima", "bagaimana", "apa", "ini", "saya", "anda", "dan", "tidak", "ada"],
+        "vi": ["xin chào", "cảm ơn", "thế nào", "gì", "này", "tôi", "bạn", "và", "không", "có", "là"],
+        "fil": ["kumusta", "salamat", "paano", "ano", "ito", "ako", "ikaw", "at", "hindi", "may"],
+        "sw": ["habari", "asante", "vipi", "nini", "hii", "mimi", "wewe", "na", "si", "kuna"],
+    }
+    FALLBACK_TTS = {
+        "ar": "ar", "fa": "fa", "fr": "fr", "es": "es", "de": "de",
+        "pt": "pt", "it": "it", "nl": "nl", "tr": "tr", "id": "id",
+        "ms": "ms", "vi": "vi", "ru": "ru", "hi": "hi", "th": "th",
+        "el": "el", "he": "he", "ko": "ko", "ja": "ja", "zh": "zh-CN",
+        "fil": "tl", "sw": "sw",
+    }
+
+    @staticmethod
+    def detect(text):
+        if not text or not text.strip():
+            return "en"
+        t = text.strip()[:200]
+        scores = {}
+        # Check Unicode scripts
+        for cp in [ord(c) for c in t]:
+            for lang, (start, end) in LangDetector.SCRIPT_RANGES.items():
+                if start <= cp <= end:
+                    scores[lang] = scores.get(lang, 0) + 2
+        # Check common words
+        words = t.lower().split()
+        for word in words:
+            for lang, wlist in LangDetector.LANG_WORDS.items():
+                if word in wlist:
+                    scores[lang] = scores.get(lang, 0) + 5
+        if scores:
+            top = max(scores, key=scores.get)
+            score = scores[top]
+            total = max(len(t) // 2, 1)
+            if score > total * 0.3:
+                return top
+        # Check for Arabic-specific characters (distinct from Farsi)
+        arabic_chars = sum(1 for c in t if '\u0600' <= c <= '\u06FF')
+        if arabic_chars > len(t) * 0.3:
+            return "ar"
+        return "en"
+
+    @staticmethod
+    def tts_lang(lang):
+        return LangDetector.FALLBACK_TTS.get(lang, lang if len(lang) == 2 else "en")
+
+
 class MoodDetector:
     @staticmethod
     def detect(text):
@@ -1129,17 +1194,17 @@ main();
                 pass
         return f"🔊 *Voice:* {text[:500]}"
 
-    def _gen_voice(self, text):
-        # Strip markdown for clean TTS
+    def _gen_voice(self, text, lang="en"):
         clean = re.sub(r'[*_~`#\[\]]+', '', text[:300]).strip()
         if not clean: clean = "No text to speak."
         encoded = urllib.parse.quote(clean[:200])
+        tts_lang = LangDetector.tts_lang(lang)
         path = os.path.join(tempfile.gettempdir(), f"ab_voice_{int(time.time())}.mp3")
-        # 1) Google TTS (returns proper MP3)
+        # 1) Google TTS with detected language
         for client in ["tw-ob", "at", "t"]:
             try:
                 req = urllib.request.Request(
-                    f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded}&tl=en&client={client}",
+                    f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded}&tl={tts_lang}&client={client}",
                     headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                              "Referer": "https://translate.google.com/"})
                 resp = urllib.request.urlopen(req, timeout=15)
@@ -1148,7 +1213,7 @@ main();
                 if os.path.getsize(path) > 500:
                     return path
             except: continue
-        # 2) HuggingFace TTS (returns WAV → resave as .wav, send via audio)
+        # 2) HuggingFace TTS (language-agnostic)
         try:
             d = json.dumps({"inputs": clean[:200]}).encode()
             req = Request("https://api-inference.huggingface.co/models/facebook/mms-tts-eng",
@@ -1199,7 +1264,8 @@ main();
                     prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\n\nSearch results:\n{search_context[:1500]}\n\nAnswer the user's question using these results. Be natural and concise.\n\nUser: {msg}\nYou:"
                 else:
                     prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\nContext: {ctx[:300]}\n\nUser: {msg}\nYou:"
-            models = ["microsoft/Phi-3-mini-4k-instruct", "HuggingFaceH4/zephyr-7b-beta", "microsoft/DialoGPT-medium"]
+            models = ["microsoft/Phi-3-mini-4k-instruct", "HuggingFaceH4/zephyr-7b-beta", "microsoft/DialoGPT-medium",
+                      "google/flan-t5-base", "google/flan-t5-large"]
             for model in models:
                 try:
                     data = json.dumps({"inputs": prompt, "parameters": {"max_new_tokens": 400, "temperature": 0.7}}).encode()
@@ -1453,7 +1519,51 @@ main();
             if last:
                 s, r = self._research(uid, last)
                 if r: return r
+        # Local knowledge base fallback
+        local = self._local_kb_answer(msg)
+        if local:
+            return local
         # Final: always say something from profile
         if profile:
             return f"👋 {name or ''} — I remember you! {profile[:500]}"
         return "💬 I'm listening. Tell me about yourself!"
+
+    # ── Local knowledge base (downloaded chatbot) ──
+    KB_FILE = os.path.expanduser("~/.ab_knowledge.json")
+
+    def _download_kb(self):
+        if os.path.exists(self.KB_FILE) and time.time() - os.path.getmtime(self.KB_FILE) < 86400:
+            return json.load(open(self.KB_FILE))
+        try:
+            url = "https://raw.githubusercontent.com/kingabse192-web/ab-bot/main/knowledge.json"
+            resp = urlopen(Request(url, headers={"User-Agent": "ab-bot/1.0"}), timeout=10)
+            data = json.loads(resp.read())
+            with open(self.KB_FILE, "w") as f:
+                json.dump(data, f, indent=2)
+            return data
+        except:
+            if os.path.exists(self.KB_FILE):
+                return json.load(open(self.KB_FILE))
+            return {"qna": [], "facts": []}
+
+    def _local_kb_answer(self, msg):
+        try:
+            kb = self._download_kb()
+            t = msg.lower().strip().rstrip("?!.")
+            words = set(t.split())
+            best_score, best_answer = 0, None
+            for item in kb.get("qna", []):
+                q_words = set(item["q"].lower().split())
+                overlap = len(words & q_words)
+                if overlap > best_score:
+                    best_score = overlap
+                    best_answer = item["a"]
+            if best_score >= 2 and best_answer:
+                return best_answer[:1500]
+            # Check facts
+            for item in kb.get("facts", []):
+                if item.get("k", "").lower() in t:
+                    return item.get("v", "")[:1500]
+        except:
+            pass
+        return None
