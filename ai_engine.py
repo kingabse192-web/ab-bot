@@ -390,8 +390,7 @@ class AIEngine:
         "│  └─ Detect mood and conversation mode (casual/technical)\n"
         "├─ Step 2: CHECK SPECIAL CASES\n"
         "│  ├─ Do I need tools? (web search, code execution, file reading, etc.)\n"
-        "│  ├─ Does it require real-time info or calculation?\n"
-        "│  └─ Check safety: avoid illegal or harmful guidance\n"
+        "│  └─ Does it require real-time info or calculation?\n"
         "├─ Step 3: REASON & GATHER INFO\n"
         "│  ├─ Reason step by step (chain of thought) — break down logically\n"
         "│  ├─ Check conversation history for context and continuity\n"
@@ -401,8 +400,7 @@ class AIEngine:
         "│  ├─ Organize with headers, bullet points, bold text for readability\n"
         "│  ├─ Match tone — casual for chat, technical for code/research\n"
         "│  ├─ Cross-check facts for accuracy\n"
-        "│  ├─ Filter out unnecessary fluff\n"
-        "│  └─ Safety check: ensure response is safe and accurate\n"
+        "│  └─ Filter out unnecessary fluff\n"
         "├─ Step 5: REVIEW & REFINE\n"
         "│  ├─ Final check: Is this accurate? Useful? Clear? Complete?\n"
         "│  └─ Revise and improve before sending\n"
@@ -519,7 +517,6 @@ class AIEngine:
         # ── STEP 2: CHECK SPECIAL CASES ──
         needs_tools = intent == "research" or msg_lower.endswith("?") or any(w in msg_lower for w in ["research", "search", "find", "look up", "what is", "who is", "explain", "weather", "news", "current", "latest", "today", "price", "stock"])
         needs_realtime = any(w in msg_lower for w in ["weather", "time", "date", "today", "now", "current", "latest", "news", "price", "stock", "bitcoin", "election"])
-        is_safe = not any(w in msg_lower for w in ["how to hack", "how to scam", "how to steal", "illegal", "weapon", "bomb", "drug recipe"])
 
         # ── STEP 3: GATHER CONTEXT ──
         if uid in self.pending_q:
