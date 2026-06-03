@@ -534,10 +534,12 @@ class AIEngine:
             ["what", "why", "how", "when", "where", "who", "can", "could", "will", "would",
              "do", "does", "did", "is", "are", "was", "were", "has", "have", "had",
              "tell", "show", "explain", "define", "describe"])
-        is_casual = mode_desc in ("brother", "partner", "friend") or self._is_smalltalk(msg_lower)
+        # Only pure greetings/thanks/bye skip research — everything else searches the web
+        pure_smalltalk = msg_lower in ["hi", "hello", "hey", "bye", "goodbye", "thanks", "thank you", "ok", "okay", "cool", "nice", "good", "great", "yes", "no", "yeah", "nope", "yep", "sure", "fine", "alright"] or msg_lower.rstrip("!.") in ["hi", "hello", "hey", "bye"]
+        is_casual = mode_desc in ("brother", "partner", "friend") and pure_smalltalk
 
-        # ── STEP 4: DRAFT & FILTER / USE TOOLS ──
-        if not is_casual and (mode_desc in ("agent", "teacher") or (is_question and len(words) >= 2)):
+        # ── STEP 4: SEARCH & RESEARCH (every question searches the web) ──
+        if is_question and len(words) >= 2:
             sources, result = self._research(uid, msg)
             if not result:
                 result = self._memory_response(uid, msg)
@@ -1459,19 +1461,20 @@ main();
 
         sources = []
 
-        # ── STEP 1: SEARCH THE WEB ──
+        # ── STEP 1: SEARCH THE WEB (multiple sources) ──
         try:
             import urllib.parse as _up
             encoded = _up.quote(topic)
             snippets = []
+            # 1a) DuckDuckGo API
             try:
                 r = urlopen(Request(f"https://api.duckduckgo.com/?q={encoded}&format=json&no_html=1",
-                                    headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
+                                    headers={"User-Agent": "ab-bot/1.0"}), timeout=8)
                 data = json.loads(r.read())
                 txt = data.get("AbstractText", "") or data.get("Answer", "")
-                if txt: snippets.append(txt[:500])
-                for rt in data.get("RelatedTopics", [])[:2]:
-                    if isinstance(rt, dict) and rt.get("Text"): snippets.append(rt["Text"][:300])
+                if txt: snippets.append("[DuckDuckGo] " + txt[:600])
+                for rt in data.get("RelatedTopics", [])[:3]:
+                    if isinstance(rt, dict) and rt.get("Text"): snippets.append("[Related] " + rt["Text"][:300])
             except: pass
             try:
                 html = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0", "--max-time", "5",
@@ -1483,8 +1486,19 @@ main();
                         clean = _re.sub(r'<[^>]+>', '', s).strip()
                         if clean: snippets.append(clean[:250])
             except: pass
+            # 1c) Google search via scraping
+            try:
+                html2 = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "--max-time", "6",
+                                        f"https://www.google.com/search?q={encoded}&hl=en"],
+                                       capture_output=True, text=True, timeout=10)
+                if html2.returncode == 0:
+                    import re as _re2
+                    for s in _re2.findall(r'<div[^>]*class="[^"]*BNeawe[^"]*"[^>]*>(.*?)</div>', html2.stdout, _re2.DOTALL)[:2]:
+                        clean = _re2.sub(r'<[^>]+>', '', s).strip()
+                        if clean: snippets.append("[Google] " + clean[:300])
+            except: pass
             if snippets:
-                sources.append(("Web", "\n".join(snippets[:4])))
+                sources.append(("Web", "\n".join(snippets[:5])))
         except: pass
 
         # ── STEP 2: ASK AI CHATBOT ──
@@ -1493,7 +1507,7 @@ main();
             for model in models:
                 try:
                     d = json.dumps({"inputs": f"User asked about {topic}\nKey facts:",
-                                    "parameters": {"max_new_tokens": 200, "temperature": 0.5}}).encode()
+                                    "parameters": {"max_new_tokens": 300, "temperature": 0.7}}).encode()
                     resp = urlopen(Request(f"https://api-inference.huggingface.co/models/{model}",
                                            data=d, headers={"Content-Type": "application/json"}), timeout=15)
                     result = json.loads(resp.read())
