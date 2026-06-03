@@ -1529,10 +1529,50 @@ main();
         local = self._local_kb_answer(msg)
         if local:
             return local
-        # Final: always say something from profile
-        if profile:
-            return f"👋 {name or ''} — I remember you! {profile[:500]}"
-        return "💬 I'm listening. Tell me about yourself!"
+        # Universal answer — always say something natural
+        return self._answer_anything(msg, profile, name)
+
+    def _answer_anything(self, msg, profile="", name=""):
+        """Generate a natural answer for ANY question — pure stdlib, no API"""
+        import random
+        t = msg.lower().strip().rstrip("?!.")
+        words = t.split()
+        # ── Question type detection ──
+        is_question = any(t.startswith(w) for w in ["what", "who", "where", "when", "why", "how", "is", "are", "do", "does", "did", "can", "will", "would", "could", "should", "have", "has", "am", "was", "were", "shall"])
+        is_how = t.startswith("how")
+        is_why = t.startswith("why")
+        is_what = t.startswith("what")
+        is_who = t.startswith("who")
+        is_where = t.startswith("where")
+        is_when = t.startswith("when")
+        is_yesno = t.startswith(("is ", "are ", "do ", "does ", "did ", "can ", "will ", "would ", "could ", "should ", "have ", "has ", "am ", "was ", "were "))
+        # ── Extract the subject (removes question words and common verbs) ──
+        stopwords = {"what", "who", "where", "when", "why", "how", "is", "are", "do", "does", "did", "can", "will", "would", "could", "should", "have", "has", "am", "was", "were", "shall", "the", "a", "an", "in", "on", "at", "to", "for", "of", "with", "by", "from", "you", "your", "me", "my", "i", "we", "our", "it", "its", "they", "them", "their", "he", "she", "him", "her", "his"}
+        subject_words = [w for w in words if w not in stopwords and len(w) > 2]
+        subject = " ".join(subject_words[:5]) if subject_words else "that"
+        topic = subject_words[0] if subject_words else subject
+        # ── Build answer ──
+        if is_question:
+            if name and profile and topic in profile.lower():
+                return f"🤔 About *{subject}* — {profile[:300]}"
+            if is_yesno:
+                return f"🤷 I don't have a definitive answer on *{subject}* right now, but that's a good question! Want me to research it properly? Just say 'research {subject}'."
+            if is_why:
+                return f"🧐 That's an interesting question about *{subject}*. There could be many reasons! I don't have all the info at hand, but I'm curious too. Want us to look into it together?"
+            if is_how:
+                return f"💡 Great question about *{subject}*! I'd love to give you a detailed answer, but I'd need to research it first. Try 'research {subject}' and I'll dig deep!"
+            if is_what:
+                return f"📖 *{subject}* — good question! Here's what I know: {subject} is something I'm still learning about, but I'm happy to research it for you. Just say 'research {subject}' and I'll use Web + Wikipedia + AI."
+            if is_where:
+                return f"📍 *{subject}* — I'm not sure about the location or place, but I can research it! Tell me 'research {subject}' and I'll find out."
+            if is_who:
+                return f"👤 *{subject}* — that's someone/something I don't know well yet. If you want, I can research it with 'research {subject}'."
+            return f"🤔 About *{subject}* — I don't have a complete answer right now, but I can research it! Just say 'research {subject}' and I'll use Web + Wikipedia + AI."
+        else:
+            # Statements — react naturally
+            if profile and name:
+                return f"👋 I hear you on *{topic}*. That's interesting! Tell me more, {name}. 😊"
+            return f"👋 Got it — *{topic}*. Tell me more about it! 😊"
 
     # ── Local conversational AI (learns from every chat) ──
     MEM_FILE = os.path.expanduser("~/.ab_chatmem.json")
