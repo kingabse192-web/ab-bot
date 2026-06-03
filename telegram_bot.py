@@ -262,3 +262,27 @@ class Bot:
             return True
         self.send_plain(chat_id, "Wrong code. Send `start` for a new one.")
         return False
+
+    def download_file(self, file_id):
+        """Download a file from Telegram by file_id, return content as string"""
+        try:
+            url = f"https://api.telegram.org/bot{self.token}/getFile"
+            payload = json.dumps({"file_id": file_id}).encode()
+            r = subprocess.run(["curl", "-s", "--max-time", "10", "-X", "POST",
+                               "-H", "Content-Type: application/json",
+                               "-d", payload, url],
+                              capture_output=True, timeout=15)
+            if r.returncode != 0:
+                return None
+            result = json.loads(r.stdout)
+            if not result.get("ok"):
+                return None
+            file_path = result["result"]["file_path"]
+            dl_url = f"https://api.telegram.org/file/bot{self.token}/{file_path}"
+            r2 = subprocess.run(["curl", "-s", "--max-time", "15", dl_url],
+                               capture_output=True, timeout=20)
+            if r2.returncode == 0 and r2.stdout:
+                return r2.stdout.decode("utf-8", errors="replace")
+        except:
+            pass
+        return None
