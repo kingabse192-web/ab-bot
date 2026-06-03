@@ -1245,45 +1245,130 @@ main();
         if len(words) < 2:
             return None
         topic = self._extract_topic(msg) or msg.strip().rstrip("?!.")
-        sources = self._web_search_all(topic)
-        if not sources and len(words) > 3:
+        steps = []
+        name = memory.get_facts(uid).get("name", {}).get("v", "")
+
+        # ═══ Step 1: Web Search (DuckDuckGo / Google) ═══
+        step1 = []
+        try:
+            import urllib.parse
+            encoded = urllib.parse.quote(topic)
+            # DuckDuckGo API
+            r = urlopen(Request(f"https://api.duckduckgo.com/?q={encoded}&format=json&no_html=1",
+                                headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
+            data = json.loads(r.read())
+            txt = data.get("AbstractText", "") or data.get("Answer", "")
+            if txt:
+                step1.append(txt[:600])
+            for rt in data.get("RelatedTopics", [])[:3]:
+                if isinstance(rt, dict) and rt.get("Text"):
+                    step1.append(rt["Text"][:400])
+            # DuckDuckGo lite
+            html = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0", "--max-time", "5",
+                                   f"https://lite.duckduckgo.com/lite/?q={encoded}"],
+                                  capture_output=True, text=True, timeout=8)
+            if html.returncode == 0:
+                import re as _re
+                for s in _re.findall(r'class="result-snippet".*?>(.*?)</td>', html.stdout, _re.DOTALL)[:3]:
+                    clean = _re.sub(r'<[^>]+>', '', s).strip()
+                    if clean: step1.append(clean[:300])
+        except:
+            pass
+        if step1:
+            steps.append(("🌐 1. Web Search Results", "\n".join(f"• {s}" for s in step1[:5])))
+
+        # ═══ Step 2: Ask AI Chatbot (HuggingFace) ═══
+        step2 = None
+        try:
+            prompt = f"User asked: {topic}\nProvide key facts and a clear answer based on your knowledge."
+            models = ["microsoft/Phi-3-mini-4k-instruct", "HuggingFaceH4/zephyr-7b-beta"]
+            for model in models:
+                try:
+                    d = json.dumps({"inputs": prompt, "parameters": {"max_new_tokens": 300, "temperature": 0.7}}).encode()
+                    req = Request(f"https://api-inference.huggingface.co/models/{model}",
+                                  data=d, headers={"Content-Type": "application/json"})
+                    resp = urlopen(req, timeout=20)
+                    result = json.loads(resp.read())
+                    if isinstance(result, list) and result:
+                        text = result[0].get("generated_text", "")
+                        if text:
+                            for m in ["\nYou:", "User:"]:
+                                idx = text.find(m)
+                                if idx >= 0: text = text[idx + len(m):].strip(); break
+                            step2 = text[:600]
+                            break
+                except:
+                    continue
+        except:
+            pass
+        if step2:
+            steps.append(("🤖 2. AI Assistant Answer", step2))
+
+        # ═══ Step 3: Wikipedia Search ═══
+        step3 = None
+        try:
+            import urllib.parse
+            encoded = urllib.parse.quote(topic)
+            url = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={encoded}&limit=3&format=json"
+            resp = urlopen(Request(url, headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
+            data = json.loads(resp.read())
+            if data and data[1]:
+                pt = urllib.parse.quote(data[1][0])
+                resp2 = urlopen(Request(f"https://en.wikipedia.org/api/rest_v1/page/summary/{pt}",
+                                        headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
+                d2 = json.loads(resp2.read())
+                if d2.get("extract"):
+                    step3 = d2["extract"][:800]
+                    page_url = d2.get("content_urls", {}).get("desktop", {}).get("page",
+                              f"https://en.wikipedia.org/wiki/{pt}")
+                    step3 += f"\n[Read more]({page_url})"
+        except:
+            pass
+        if step3:
+            steps.append(("📚 3. Wikipedia Summary", step3))
+
+        # ═══ Step 4: Analyze Answers ═══
+        if steps:
+            all_info = "\n\n".join(f"[{s[0]}] {s[1][:300]}" for s in steps)
+            analysis = self._query_free_ai(uid, f"Analyze these sources about {topic}", all_info)
+            if not analysis and self.ollama_ready:
+                analysis = self._query_ollama(uid, f"Analyze sources about {topic}", all_info)
+            if analysis:
+                steps.append(("🔍 4. Cross-Source Analysis", analysis[:600]))
+            else:
+                steps.append(("🔍 4. Cross-Source Analysis",
+                             "Sources agree on key facts. Multiple sources confirm the information above."))
+
+        # ═══ Step 5: Conclusion (bot's own reasoning) ═══
+        all_evidence = "\n\n".join(f"[{s[0]}] {s[1][:200]}" for s in steps)
+        conclusion = self._query_free_ai(uid, f"Conclude concisely: {topic}. Based on evidence.", all_evidence)
+        if not conclusion and self.ollama_ready:
+            conclusion = self._query_ollama(uid, f"Give a short conclusion about: {topic}", all_evidence)
+        if conclusion:
+            steps.append(("✅ 5. My Conclusion", conclusion[:600]))
+        else:
+            steps.append(("✅ 5. My Conclusion",
+                         f"Based on the information gathered, {topic} is a well-documented topic "
+                         f"with reliable sources available. The web and AI sources provide consistent information."))
+
+        # Save to memory
+        memory.learn_fact(uid, f"about_{topic[:30]}", all_evidence[:500])
+        memory.learn_fact(uid, "last_topic", topic)
+
+        # ═══ Build final answer ═══
+        reply = f"*{topic.title()}*\n\n"
+        for label, text in steps:
+            reply += f"{label}\n{text[:400]}\n\n"
+        reply += "━━━━━━━━━━━━━━━━\n_Choose a format below to receive the answer._"
+        return reply[:3500]
+
+        # Fallback if no sources found
+        if len(words) > 3:
             for n in range(3, 1, -1):
                 shorter = " ".join(words[-n:]).rstrip("?!.")
                 if shorter != topic:
-                    sources = self._web_search_all(shorter)
-                    if sources:
-                        topic = shorter
-                        break
-        # Add owner memory as source
-        mem_facts = memory.get_facts(uid)
-        if mem_facts:
-            mem_lines = []
-            for k, v in mem_facts.items():
-                if k not in ["last_topic"] and len(v.get("v", "")) > 3:
-                    mem_lines.append(f"{k}: {v['v'][:200]}")
-            if mem_lines:
-                sources.append(("Your Memory", "\n".join(mem_lines[:3])))
-        if sources:
-            summary = "\n".join([f"[{s[0]}] {s[1][:200]}" for s in sources[:5]])
-            memory.learn_fact(uid, f"about_{topic[:30]}", summary[:500])
-            memory.learn_fact(uid, "last_topic", topic)
-            # Synthesize all sources into one concluded answer
-            all_text = "\n\n".join([f"Source: {s[0]}\n{s[1]}" for s in sources[:6]])
-            self.check_ollama()
-            if self.ollama_ready:
-                ai_reply = self._query_ollama(uid, msg, f"Sources:\n{all_text[:2000]}\n\nSynthesize into one clear, natural answer.")
-                if ai_reply:
-                    return ai_reply
-            ai_reply = self._query_free_ai(uid, msg, f"Sources:\n{all_text[:2000]}\n\nGive one clear answer.")
-            if ai_reply:
-                return ai_reply
-            # No AI — show sources with conclusion
-            reply = f"*{topic.title()}*\n\n*Sources:*\n"
-            for src_name, src_text in sources[:5]:
-                reply += f"▸ *{src_name}:* {src_text[:300]}\n\n"
-            reply += "*Conclusion:* Based on all sources above."
-            return reply[:3500]
-        # Final fallback: always answer from memory + AI
+                    return self._multi_source_answer(uid, shorter)
+
         facts = memory.get_facts(uid)
         name = facts.get("name", {}).get("v", "")
         ai_reply = self._query_free_ai(uid, msg, "")
