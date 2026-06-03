@@ -292,6 +292,7 @@ class AIEngine:
         return results
 
     def _deliver(self, uid, fmt, bot, chat_id, callback_id=None, msg_id=None):
+        """Step 6: FORMAT DELIVERY — send answer as text, voice, image, or file"""
         pq = self.pending_q.pop(uid, None)
         if not pq:
             if bot and callback_id: bot.answer_callback(callback_id, "Expired, ask again!")
@@ -330,9 +331,11 @@ class AIEngine:
         return None
 
     def respond(self, uid, msg, bot=None, chat_id=None):
+        # ── STEP 1: READ ──
         msg_lower = msg.lower().strip()
         words = msg.split()
 
+        # ── STEP 2: UNDERSTAND (check commands first) ──
         if any(w in msg_lower for w in ["who are you", "what are you", "your name", "introduce yourself", "tell me about yourself", "what is your name", "about you"]):
             return self._cmd_about()
         if msg_lower in ["help", "/help"]:
@@ -386,7 +389,7 @@ class AIEngine:
         if self._is_code_request(msg_lower):
             return self._auto_code(uid, msg, bot, chat_id)
 
-        # Pending format change
+        # ── STEP 3: THINK (check pending format, detect mode, analyze intent) ──
         if uid in self.pending_q:
             fmts = {"text": "text", "txt": "text", "voice": "voice", "voise": "voice",
                     "image": "image", "img": "image", "picture": "image", "photo": "image",
@@ -395,7 +398,6 @@ class AIEngine:
                 return self._deliver(uid, fmts[msg_lower], bot, chat_id)
             self.pending_q.pop(uid)
 
-        # Decide: research question or casual chat?
         mode_desc, personality = self._detect_mode(msg)
         is_question = msg_lower.endswith("?") or any(msg_lower.startswith(w) for w in
             ["what", "why", "how", "when", "where", "who", "can", "could", "will", "would",
@@ -403,7 +405,7 @@ class AIEngine:
              "tell", "show", "explain", "define", "describe"])
         is_casual = mode_desc in ("brother", "partner", "friend") or self._is_smalltalk(msg_lower)
 
-        # Research question → answer direct + optional format change
+        # ── STEP 4: TOOLS / RESEARCH (if serious question from agent/teacher mode) ──
         if not is_casual and (mode_desc in ("agent", "teacher") or (is_question and len(words) >= 2)):
             sources, result = self._research(uid, msg)
             if not result:
@@ -411,6 +413,8 @@ class AIEngine:
             memory.add_conv(uid, "assistant", result)
             self.pending_q[uid] = {"q": msg, "result": result, "time": time.time()}
             if bot and chat_id:
+                # ── STEP 5: GENERATE (happens inside _research / _memory_response) ──
+                # ── STEP 6: DELIVER ──
                 bot.send_msg(chat_id, result)
                 bot.send_buttons(chat_id, "Change format:", [
                     ("🎤 Voice", f"ans_voice_{uid}"),
@@ -419,7 +423,7 @@ class AIEngine:
                 ])
             return None
 
-        # Casual / everything else → direct AI reply
+        # Casual / everything else → direct AI reply (steps 4-6 combined)
         result = self._memory_response(uid, msg)
         memory.add_conv(uid, "assistant", result)
         return result
@@ -1326,7 +1330,7 @@ main();
 
         sources = []
 
-        # Step 1: Web Search
+        # ── STEP 1: SEARCH THE WEB ──
         try:
             import urllib.parse as _up
             encoded = _up.quote(topic)
@@ -1354,7 +1358,7 @@ main();
                 sources.append(("Web", "\n".join(snippets[:4])))
         except: pass
 
-        # Step 2: AI Chatbot
+        # ── STEP 2: ASK AI CHATBOT ──
         try:
             models = ["microsoft/Phi-3-mini-4k-instruct", "HuggingFaceH4/zephyr-7b-beta"]
             for model in models:
@@ -1377,7 +1381,7 @@ main();
                 except: continue
         except: pass
 
-        # Step 3: Wikipedia
+        # ── STEP 3: CHECK WIKIPEDIA ──
         try:
             import urllib.parse as _up
             encoded = _up.quote(topic)
@@ -1393,7 +1397,8 @@ main();
                     sources.append(("Wikipedia", d2["extract"][:700]))
         except: pass
 
-        # Build answer (check cache, save to cache)
+        # ── STEP 4: CROSS-SOURCE ANALYSIS (compare Web, AI, Wikipedia — find common ground) ──
+        # ── STEP 5: FINAL CONCLUSION ──
         conclusion = self._build_answer(sources, topic) or memory.cache_get(topic)
         if isinstance(conclusion, dict):
             conclusion = conclusion["a"]
