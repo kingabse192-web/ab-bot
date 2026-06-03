@@ -161,8 +161,12 @@ class Bot:
                 data = f.read()
             fname = os.path.basename(audio_path)
             ext = os.path.splitext(fname)[1].lower()
-            mime = "audio/mpeg" if ext == ".mp3" else "audio/ogg"
-            self._multipart("sendVoice", {"chat_id": chat_id}, {"voice": (fname, data, mime)})
+            if ext == ".mp3":
+                self._multipart("sendVoice", {"chat_id": chat_id}, {"voice": (fname, data, "audio/mpeg")})
+            elif ext == ".wav":
+                self._multipart("sendAudio", {"chat_id": chat_id, "title": "Answer"}, {"audio": (fname, data, "audio/wav")})
+            else:
+                self._multipart("sendVoice", {"chat_id": chat_id}, {"voice": (fname, data, "audio/ogg")})
         except Exception as e:
             logger.error(f"Send voice failed: {e}")
 
