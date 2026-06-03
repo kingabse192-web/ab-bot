@@ -292,23 +292,26 @@ class AIEngine:
         return results
 
     def _deliver_all(self, uid, q, result, bot, chat_id):
-        """Step 6: deliver in ALL formats at once — text + voice + image + file"""
-        # 6a: Text
-        bot.send_msg(chat_id, result)
-        # 6b: Voice
+        """Step 6: deliver — voice + image + file (text only on request)"""
+        # 6a: Voice
         try:
+            bot.send_action(chat_id, "record_audio")
             vp = self._gen_voice(result[:400])
             if vp:
                 bot.send_voice(chat_id, vp)
                 os.remove(vp)
         except: pass
-        # 6c: Image (use original question as prompt)
+        # 6b: Image (use original question as prompt)
         try:
             self._cmd_imagine(uid, q, bot, chat_id)
         except: pass
-        # 6d: File
+        # 6c: File
         try:
             bot.send_text_as_file(chat_id, result, "answer.txt", "📄 Full answer")
+        except: pass
+        # 6d: Hint — text available on request
+        try:
+            bot.send_msg(chat_id, "💬 Say `show text` to read the answer")
         except: pass
 
     def _deliver(self, uid, fmt, bot, chat_id, callback_id=None, msg_id=None):
@@ -409,13 +412,16 @@ class AIEngine:
         if self._is_code_request(msg_lower):
             return self._auto_code(uid, msg, bot, chat_id)
 
-        # ── STEP 3: THINK (check pending format, detect mode, analyze intent) ──
+        # ── STEP 3: THINK (check pending format/text request, detect mode) ──
         if uid in self.pending_q:
             fmts = {"text": "text", "txt": "text", "voice": "voice", "voise": "voice",
                     "image": "image", "img": "image", "picture": "image", "photo": "image",
                     "file": "file", "doc": "file", "document": "file"}
             if msg_lower in fmts:
                 return self._deliver(uid, fmts[msg_lower], bot, chat_id)
+            # Text on request: "show text", "send text", "text please", etc.
+            if any(w in msg_lower for w in ["show text", "send text", "text please", "give me text", "see text", "read text", "show me text", "show the text", "text now", "i need text"]):
+                return self._deliver(uid, "text", bot, chat_id)
             self.pending_q.pop(uid)
 
         mode_desc, personality = self._detect_mode(msg)
@@ -1312,29 +1318,32 @@ main();
         if not sources:
             return None
         all_text = "\n".join(f"{s[1][:300]}" for s in sources)
-        # Check cache first
         cached = memory.cache_get(topic)
         if cached:
             return cached["a"][:2000]
-        # Try AI
-        ai = self._query_free_ai(0, f"Answer concisely about: {topic}", all_text)
+        # Try AI with all sources combined
+        combined = "\n\n".join(f"📌 {s[0]}:\n{s[1][:500]}" for s in sources)
+        ai = self._query_free_ai(0, f"Answer this question thoroughly using ALL sources below. Give a complete, accurate answer with source labels. Question: {topic}", combined)
         if ai and len(ai) > 30:
             memory.cache_set(topic, ai)
             return ai[:2000]
         if self.ollama_ready:
-            ai = self._query_ollama(0, f"Answer: {topic}", all_text)
+            ai = self._query_ollama(0, f"Answer thoroughly with all sources: {topic}", combined)
             if ai and len(ai) > 30:
                 memory.cache_set(topic, ai)
                 return ai[:2000]
-        # Manual: best source
-        for src in sources:
-            if src[0] == "Wikipedia" and len(src[1]) > 100:
-                return src[1][:1500]
-        for src in sources:
-            if src[0] == "Web" and len(src[1]) > 100:
-                return src[1][:1500]
-        if sources:
-            return sources[0][1][:1000]
+        # Manual: combine best sources with labels
+        lines = []
+        seen = set()
+        for label in ["Wikipedia", "AI", "Web"]:
+            for src in sources:
+                if src[0] == label and src[1][:100] not in seen:
+                    lines.append(f"**{label}:** {src[1][:500]}")
+                    seen.add(src[1][:100])
+        if lines:
+            result = "\n\n".join(lines)
+            memory.cache_set(topic, result)
+            return result[:2000]
         return None
 
     def _research(self, uid, msg):
@@ -1497,16 +1506,15 @@ main();
         last_topic = facts.get("last_topic", {}).get("v", "")
 
         prompt = (
-            f"You are ab, a personal AI assistant. "
+            f"You are ab — a smart, conversational AI assistant. "
             f"User: {name or 'someone'}. Mood: {mood}. "
             f"Personality: {personality}. "
-            f"We have a {mode} relationship — act accordingly. "
-            f"When asked about 'us', 'you', 'me', or our relationship, "
-            f"speak naturally about our bond and history together. "
-            f"When asked about yourself, answer as ab — you're their AI. "
-            f"Rules: {'; '.join(rules) if rules else 'be natural'}\n"
-            f"Keep responses natural, brief, and in character.\n\n"
-            f"{ctx[:600]}\n\n"
+            f"We have a {mode} relationship. "
+            f"You are thorough, natural, and friendly. "
+            f"You give complete answers, use examples when helpful, "
+            f"and always stay in character. "
+            f"Rules: {'; '.join(rules) if rules else 'be natural and helpful'}\n"
+            f"Context:\n{ctx[:600]}\n\n"
             f"User: {msg}\n"
             f"You:"
         )
