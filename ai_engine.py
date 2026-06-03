@@ -320,7 +320,14 @@ class AIEngine:
         return None
 
     def _deliver_all(self, uid, q, result, bot, chat_id):
-        """Step 6: deliver — voice + image + file (text only on request)"""
+        """Step 6: deliver — voice + image + file + source links"""
+        # Extract source links from result (appended by _research)
+        link_section = ""
+        if "📚 *Sources:*" in result:
+            parts = result.split("📚 *Sources:*")
+            link_section = "📚 *Sources:*" + parts[1]
+            result = parts[0].strip()
+
         # 6a: Voice
         try:
             bot.send_action(chat_id, "record_audio")
@@ -333,14 +340,19 @@ class AIEngine:
         try:
             self._cmd_imagine(uid, q, bot, chat_id)
         except: pass
-        # 6c: File
+        # 6c: File (with sources included)
         try:
-            bot.send_text_as_file(chat_id, result, "answer.txt", "📄 Full answer")
+            bot.send_text_as_file(chat_id, result + "\n\n" + link_section, "answer.txt", "📄 Full answer")
         except: pass
-        # 6d: Hint — text available on request
-        try:
-            bot.send_msg(chat_id, "💬 Say `show text` to read the answer")
-        except: pass
+        # 6d: Source links as clickable message
+        if link_section:
+            try:
+                bot.send_msg(chat_id, link_section)
+            except: pass
+        else:
+            try:
+                bot.send_msg(chat_id, "💬 Say `show text` to read the answer")
+            except: pass
 
     def _deliver(self, uid, fmt, bot, chat_id, callback_id=None, msg_id=None):
         """Step 6: FORMAT DELIVERY — send answer as text, voice, image, or file"""
