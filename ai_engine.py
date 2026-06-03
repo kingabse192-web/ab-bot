@@ -1178,18 +1178,21 @@ main();
             self.ollama_ready = False
             return None
 
-    def _query_free_ai(self, uid, msg, search_context=""):
+    def _query_free_ai(self, uid, msg, search_context="", custom_prompt=""):
         try:
-            ctx = memory.build_context(uid)
-            rules = memory.get_rules()
-            mood = self.mood.detect(msg)
-            facts = memory.get_facts(uid)
-            name = facts.get("name", {}).get("v", "there")
-            rules_text = "; ".join(rules) if rules else "be helpful"
-            if search_context:
-                prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\n\nSearch results:\n{search_context[:1500]}\n\nAnswer the user's question using these results. Be natural and concise.\n\nUser: {msg}\nYou:"
+            if custom_prompt:
+                prompt = custom_prompt
             else:
-                prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\nContext: {ctx[:300]}\n\nUser: {msg}\nYou:"
+                ctx = memory.build_context(uid)
+                rules = memory.get_rules()
+                mood = self.mood.detect(msg)
+                facts = memory.get_facts(uid)
+                name = facts.get("name", {}).get("v", "there")
+                rules_text = "; ".join(rules) if rules else "be helpful"
+                if search_context:
+                    prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\n\nSearch results:\n{search_context[:1500]}\n\nAnswer the user's question using these results. Be natural and concise.\n\nUser: {msg}\nYou:"
+                else:
+                    prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\nContext: {ctx[:300]}\n\nUser: {msg}\nYou:"
             models = ["microsoft/Phi-3-mini-4k-instruct", "HuggingFaceH4/zephyr-7b-beta", "microsoft/DialoGPT-medium"]
             for model in models:
                 try:
@@ -1344,6 +1347,20 @@ main();
             return sources[-1][1][:600]
         return self._memory_response(uid, topic)
 
+    def _detect_mode(self, msg):
+        t = msg.lower().strip()
+        if any(w in t for w in ["love", "miss", "hug", "feel", "lonely", "sad", "hurt", "cry", "depressed", "tired", "mood"]):
+            return "brother", "warm and caring like a brother, give emotional support"
+        if any(w in t for w in ["sexy", "hot", "beautiful", "handsome", "kiss", "baby", "honey", "darling", "sweet", "cutie", "love you", "❤️"]):
+            return "partner", "warm and affectionate like a romantic partner"
+        if any(w in t for w in ["do it", "make ", "create ", "write ", "code ", "run ", "execute ", "build "]):
+            return "agent", "professional and precise, execute tasks immediately"
+        if any(w in t for w in ["teach", "learn", "explain", "what is", "how to", "define", "meaning of"]):
+            return "teacher", "educational and thorough, explain step by step"
+        if any(w in t for w in ["bro", "dude", "man", "hey", "yo", "sup", "whats up", "how's it"]):
+            return "brother", "casual and brotherly, talk like close friends"
+        return "friend", "natural and conversational like a close friend"
+
     def _memory_response(self, uid, msg):
         msg_lower = msg.lower().strip()
         facts = memory.get_facts(uid)
@@ -1353,41 +1370,49 @@ main();
         for r in rules:
             if r.lower() in msg_lower:
                 return f"📋 *Rule:* {r}"
-
         for k, v in facts.items():
             if k.lower() in msg_lower and len(k) > 3:
                 return f"🧠 *{k}*: {v['v'][:200]}"
 
-        if any(w in msg_lower for w in ["hi", "hello", "hey", "sup", "yo"]):
-            return f"👋 Hello{' ' + name if name else ''}! I'm **ab**. Ask me anything! 💬"
-
-        if "how are you" in msg_lower:
-            return "😊 I'm doing great! How can I help you today? 💪"
-
-        if "who are you" in msg_lower or "what are you" in msg_lower:
-            return "🤖 I'm **ab**, your personal AI assistant. I can research topics, write code, create files, run commands, and learn from you! 🧠"
-
-        if "what can you" in msg_lower or "what do you" in msg_lower:
-            return "✨ I can:\n• 🔍 Research any topic online\n• 💻 Generate code in 12+ languages\n• 🔊 Send voice messages\n• 🖼️ Create images\n• 📝 Create files\n• 🤖 Execute multi-step tasks\n• 🧠 Remember what you teach me"
-
-        if any(w in msg_lower for w in ["bye", "goodbye", "see you", "night"]):
-            return f"👋 Goodbye{' ' + name if name else ''}! I'll be here when you need me. 😊"
-
-        if any(w in msg_lower for w in ["thanks", "thank you", "thx"]):
-            return "🙌 You're welcome! Let me know what else you need. 😊"
-
-        if msg_lower in ["ok", "okay", "k", "cool", "nice", "good", "great"]:
-            return "👍 What would you like to do next? 💬"
-
-        last_topic = facts.get("last_topic", {}).get("v", "")
-        if last_topic and any(w in msg_lower for w in ["more", "again", "elaborate", "continue", "further"]):
-            reply, title, summary = self._web_search(last_topic)
-            if reply:
+        # Quick keyword replies
+        quick = {
+            ("hi", "hello", "hey", "yo", "sup", "heyo"): f"👋 Hey{' ' + name if name else ''}! 💬",
+            ("how are you", "how r u", "how do you do"): "😊 I'm great! What's up? 💪",
+            ("bye", "goodbye", "see you", "night", "cya"): f"👋 Goodbye{' ' + name if name else ''}! 😊",
+            ("thanks", "thank you", "thx", "ty"): "🙌 Anytime! 😊",
+            ("ok", "okay", "k", "cool", "nice", "good", "great", "fine", "alright"): "👍 Got it! What next?",
+            ("who are you", "what are you"): "🤖 I'm **ab**, your AI. Friend, teacher, helper — whatever you need!",
+            ("what can you", "what do you"): "✨ I can research, code, create images, voice, files, run commands, and more!",
+        }
+        for triggers, reply in quick.items():
+            if msg_lower in triggers:
                 return reply
 
-        if msg_lower.endswith("?") or any(msg_lower.startswith(w) for w in ["what", "why", "how", "when", "where", "who"]):
-            return f"🤔 That's a great question! Let me look into that for you. Can you tell me more about what you're interested in? 🔍"
+        # Try AI with conversation context for deeper understanding
+        ctx = memory.build_context(uid)
+        mood = self.mood.detect(msg)
+        mode, personality = self._detect_mode(msg)
 
+        prompt = (
+            f"You are ab, a personal AI assistant. "
+            f"User: {name or 'someone'}. Mood: {mood}. "
+            f"Personality: {personality}. "
+            f"Rules: {'; '.join(rules) if rules else 'be natural'}\n"
+            f"Keep responses natural, brief, and in character.\n\n"
+            f"{ctx[:600]}\n\n"
+            f"User: {msg}\n"
+            f"You:"
+        )
+        ai_reply = self._query_free_ai(uid, msg, "", prompt)
+        if ai_reply and len(ai_reply) > 15:
+            return ai_reply[:1500]
+
+        # Fallback
+        if any(w in msg_lower for w in ["more", "again", "elaborate", "continue", "further"]):
+            last = facts.get("last_topic", {}).get("v", "")
+            if last:
+                s, r = self._research(uid, last)
+                if r: return r
         if name:
-            return f"👤 Yes {name}? I'm listening. What would you like to know? 🤖"
-        return "💬 I'm here for you. What would you like to talk about? 😊"
+            return f"👤 {name}? I'm here. What's up? 🤖"
+        return "💬 I'm listening. What's on your mind? 😊"
