@@ -1482,88 +1482,139 @@ main();
         start_time = time.time()
 
         sources = []
-        links = []
+        all_snippets = []
+        all_links = []
+        snippets_lock = threading.Lock()
+        links_lock = threading.Lock()
 
-        # ── STEP 1: SEARCH EVERY WEBSITE (quick — max 12s total) ──
-        try:
-            import urllib.parse as _up
-            encoded = _up.quote(topic)
-            snippets = []
-            # 1a) DuckDuckGo API — get abstract + up to 10 related topics
+        def _safe_add(snip_list, link_list):
+            with snippets_lock:
+                all_snippets.extend(snip_list)
+            with links_lock:
+                all_links.extend(link_list)
+
+        import urllib.parse as _up
+        encoded = _up.quote(topic)
+
+        # ── PARALLEL SEARCH (max 12s) ──
+        def _search_ddg_api():
             try:
                 r = urlopen(Request(f"https://api.duckduckgo.com/?q={encoded}&format=json&no_html=1",
-                                    headers={"User-Agent": "ab-bot/1.0"}), timeout=8)
+                                    headers={"User-Agent": "ab-bot/1.0"}), timeout=6)
                 data = json.loads(r.read())
                 txt = data.get("AbstractText", "") or data.get("Answer", "")
-                abstract_url = data.get("AbstractURL", "")
-                if txt: snippets.append("[DuckDuckGo] " + txt[:800])
-                if abstract_url: links.append(("DuckDuckGo", abstract_url))
-                for rt in data.get("RelatedTopics", [])[:10]:
+                snip, lnk = [], []
+                if txt: snip.append("[DuckDuckGo] " + txt[:600])
+                u = data.get("AbstractURL", "")
+                if u: lnk.append(("DuckDuckGo", u))
+                for rt in data.get("RelatedTopics", [])[:5]:
                     if isinstance(rt, dict) and rt.get("Text"):
-                        snippets.append("[Related] " + rt["Text"][:400])
-                        if rt.get("FirstURL"): links.append(("Related", rt["FirstURL"]))
+                        snip.append("[Related] " + rt["Text"][:300])
+                        if rt.get("FirstURL"): lnk.append(("Related", rt["FirstURL"]))
+                _safe_add(snip, lnk)
             except: pass
-            # 1b) DuckDuckGo HTML search — get up to 10 results
+
+        def _search_ddg_lite():
             try:
-                html = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0", "--max-time", "6",
+                html = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0", "--max-time", "5",
                                        f"https://lite.duckduckgo.com/lite/?q={encoded}"],
-                                      capture_output=True, text=True, timeout=8)
+                                      capture_output=True, text=True, timeout=6)
                 if html.returncode == 0:
+                    snip, lnk = [], []
                     import re as _re
-                    snippets_html = _re.findall(r'class="result-snippet".*?>(.*?)</td>', html.stdout, _re.DOTALL)[:10]
-                    links_html = _re.findall(r'class="result-link".*?href="(.*?)".*?>(.*?)</a>', html.stdout, _re.DOTALL)[:10]
+                    snippets_html = _re.findall(r'class="result-snippet".*?>(.*?)</td>', html.stdout, _re.DOTALL)[:8]
+                    links_html = _re.findall(r'class="result-link".*?href="(.*?)".*?>(.*?)</a>', html.stdout, _re.DOTALL)[:8]
                     for s, link in zip(snippets_html, links_html):
                         clean = _re.sub(r'<[^>]+>', '', s).strip()
-                        if clean: snippets.append("[DDG] " + clean[:300])
+                        if clean: snip.append("[DDG] " + clean[:200])
                         if link:
                             url = link[0] if not link[0].startswith("//") else "https:" + link[0]
-                            links.append(("Web", url))
+                            lnk.append(("Web", url))
+                    _safe_add(snip, lnk)
             except: pass
-            # 1c) Google search — get up to 10 results
+
+        def _search_google():
             try:
-                html2 = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "--max-time", "8",
-                                        f"https://www.google.com/search?q={encoded}&hl=en"],
-                                       capture_output=True, text=True, timeout=10)
-                if html2.returncode == 0:
-                    import re as _re2
-                    for s in _re2.findall(r'<div[^>]*class="[^"]*BNeawe[^"]*"[^>]*>(.*?)</div>', html2.stdout, _re2.DOTALL)[:5]:
-                        clean = _re2.sub(r'<[^>]+>', '', s).strip()
-                        if clean: snippets.append("[Google] " + clean[:300])
-                    for link in _re2.findall(r'<a[^>]*href="(/url\?q=[^"&]+)', html2.stdout)[:5]:
+                html = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "--max-time", "6",
+                                       f"https://www.google.com/search?q={encoded}&hl=en"],
+                                      capture_output=True, text=True, timeout=8)
+                if html.returncode == 0:
+                    snip, lnk = [], []
+                    import re as _re
+                    for s in _re.findall(r'<div[^>]*class="[^"]*BNeawe[^"]*"[^>]*>(.*?)</div>', html.stdout, _re.DOTALL)[:3]:
+                        clean = _re.sub(r'<[^>]+>', '', s).strip()
+                        if clean: snip.append("[Google] " + clean[:200])
+                    for link in _re.findall(r'<a[^>]*href="(/url\?q=[^"&]+)', html.stdout)[:3]:
                         import urllib.parse as _up2
                         parsed = _up2.parse_qs(link.replace("/url?q=", "").split("&")[0])
                         url = parsed.get("q", [None])[0]
-                        if url: links.append(("Google", url))
+                        if url: lnk.append(("Google", url))
+                    _safe_add(snip, lnk)
             except: pass
-            # 1d) Bing search — additional results
+
+        def _search_bing():
             try:
-                html3 = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "--max-time", "6",
-                                        f"https://www.bing.com/search?q={encoded}"],
-                                       capture_output=True, text=True, timeout=10)
-                if html3.returncode == 0:
-                    import re as _re3
-                    for s in _re3.findall(r'<p[^>]*class="[^"]*b_lineclamp[^"]*"[^>]*>(.*?)</p>', html3.stdout, _re3.DOTALL)[:3]:
-                        clean = _re3.sub(r'<[^>]+>', '', s).strip()
-                        if clean: snippets.append("[Bing] " + clean[:300])
+                html = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "--max-time", "5",
+                                       f"https://www.bing.com/search?q={encoded}"],
+                                      capture_output=True, text=True, timeout=8)
+                if html.returncode == 0:
+                    snip = []
+                    import re as _re
+                    for s in _re.findall(r'<p[^>]*class="[^"]*b_lineclamp[^"]*"[^>]*>(.*?)</p>', html.stdout, _re.DOTALL)[:3]:
+                        clean = _re.sub(r'<[^>]+>', '', s).strip()
+                        if clean: snip.append("[Bing] " + clean[:200])
+                    _safe_add(snip, [])
             except: pass
-            # 1e) Fetch actual page content from top 2 links for deeper info
-            fetched = 0
-            for src_name, url in links:
-                if fetched >= 2: break
-                if not url or "wikipedia" in url: continue
+
+        def _search_wikipedia():
+            try:
+                resp = urlopen(Request(f"https://en.wikipedia.org/w/api.php?action=opensearch&search={encoded}&limit=2&format=json",
+                                      headers={"User-Agent": "ab-bot/1.0"}), timeout=4)
+                data = json.loads(resp.read())
+                if data and len(data) > 2:
+                    snip, lnk = [], []
+                    for i, title in enumerate(data[1]):
+                        url = data[3][i] if len(data) > 3 and i < len(data[3]) else ""
+                        desc = data[2][i] if len(data) > 2 and i < len(data[2]) else ""
+                        if title: snip.append(f"[Wiki] {title}: {desc[:400]}")
+                        if url: lnk.append(("Wikipedia", url))
+                    _safe_add(snip, lnk)
+            except: pass
+
+        def _search_page_fetch():
+            # Wait a bit for links to populate, then fetch top 1 page
+            time.sleep(3)
+            target = None
+            with links_lock:
+                for src, url in all_links:
+                    if url and "wikipedia" not in url:
+                        target = url
+                        break
+            if target:
                 try:
-                    page = urlopen(Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=6)
-                    html_p = page.read().decode("utf-8", errors="replace")[:3000]
-                    import re as _re4
-                    text_p = _re4.sub(r'<[^>]+>', ' ', html_p)
-                    text_p = _re4.sub(r'\s+', ' ', text_p).strip()[:500]
-                    if len(text_p) > 100:
-                        snippets.append(f"[Page] {text_p}")
-                        fetched += 1
+                    page = urlopen(Request(target, headers={"User-Agent": "Mozilla/5.0"}), timeout=5)
+                    html_p = page.read().decode("utf-8", errors="replace")[:2000]
+                    import re as _re
+                    text_p = _re.sub(r'<[^>]+>', ' ', html_p)
+                    text_p = _re.sub(r'\s+', ' ', text_p).strip()[:400]
+                    if len(text_p) > 80:
+                        _safe_add([f"[Page] {text_p}"], [])
                 except: pass
-            if snippets:
-                sources.append(("Web", "\n".join(snippets[:8])))
-        except: pass
+
+        from concurrent.futures import ThreadPoolExecutor, wait
+        pool = ThreadPoolExecutor(max_workers=8)
+        futs = [
+            pool.submit(_search_ddg_api),
+            pool.submit(_search_ddg_lite),
+            pool.submit(_search_google),
+            pool.submit(_search_bing),
+            pool.submit(_search_wikipedia),
+            pool.submit(_search_page_fetch),
+        ]
+        wait(futs, timeout=10)
+
+        if all_snippets:
+            sources.append(("Web", "\n".join(all_snippets[:8])))
 
         # ── STEP 2: ASK AI CHATBOT (skip if web search already took too long) ──
         if time.time() - start_time < 10:
@@ -1589,25 +1640,7 @@ main();
                     except: continue
             except: pass
 
-        # ── STEP 3: CHECK WIKIPEDIA ──
-        try:
-            import urllib.parse as _up
-            encoded = _up.quote(topic)
-            resp = urlopen(Request(f"https://en.wikipedia.org/w/api.php?action=opensearch&search={encoded}&limit=3&format=json",
-                                   headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
-            data = json.loads(resp.read())
-            if data and data[1]:
-                pt = _up.quote(data[1][0])
-                resp2 = urlopen(Request(f"https://en.wikipedia.org/api/rest_v1/page/summary/{pt}",
-                                        headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
-                d2 = json.loads(resp2.read())
-                if d2.get("extract"):
-                    sources.append(("Wikipedia", d2["extract"][:1000]))
-                    wiki_url = d2.get("content_urls", {}).get("desktop", {}).get("page", f"https://en.wikipedia.org/wiki/{pt}")
-                    links.append(("Wikipedia", wiki_url))
-        except: pass
-
-        # ── STEP 5: FINAL CONCLUSION + SOURCE LINKS ──
+        # ── STEP 3: FINAL CONCLUSION + SOURCE LINKS ──
         conclusion = self._build_answer(sources, topic) or memory.cache_get(topic)
         if isinstance(conclusion, dict):
             conclusion = conclusion["a"]
@@ -1615,7 +1648,7 @@ main();
             # Append source links to conclusion
             seen_urls = set()
             link_lines = []
-            for src_name, url in links:
+            for src_name, url in all_links:
                 if url and url not in seen_urls:
                     seen_urls.add(url)
                     link_lines.append(f"🔗 [{src_name}]({url})")
