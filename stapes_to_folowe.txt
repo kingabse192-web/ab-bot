@@ -30,7 +30,6 @@ Read the question – I identify what you're asking and any important details.
 Understand the goal – I determine whether you want information, an explanation, instructions, advice, calculations, writing help, etc.
 Use relevant knowledge – I draw on my training and, when needed, search for up-to-date information.
 Reason through the answer – I connect facts, check for consistency, and organize the response.
-Apply safety and accuracy checks – I avoid harmful, illegal, or misleading guidance and try to point out uncertainty when it exists.
 Write the response – I tailor the answer to your question and level of detail requested.
 Revise before sending – I do a final check for clarity and correctness.
 
@@ -51,7 +50,6 @@ Understand the Query
 I first read and interpret what you actually mean — including fixing spelling/grammar issues (like in your message), understanding context, and detecting intent (serious question, joke, request for help, etc.).
 Check for Special Cases
 Do I need tools? (web search, code execution, file reading, X/Twitter search, etc.)
-Is this something I should refuse? (illegal activity, etc.)
 Does it require real-time information or calculation?
 
 Reason Step by Step (Chain of Thought)
@@ -96,7 +94,6 @@ I don't just dump all the data at you. I filter it based on strict rules:
 
 Fact-Checking: I cross-reference the data to make sure it is accurate and relevant to your exact question.
 
-Safety & Privacy: I ensure the response is safe, secure, and protects your private information.
 
 Step 4: Format and Shape the Text
 Now, I draft the actual words you see on screen. I design the layout specifically to be easy on your eyes:
