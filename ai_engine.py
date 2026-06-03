@@ -291,6 +291,26 @@ class AIEngine:
             results.append(("AI", ai_reply[:500]))
         return results
 
+    def _deliver_all(self, uid, q, result, bot, chat_id):
+        """Step 6: deliver in ALL formats at once — text + voice + image + file"""
+        # 6a: Text
+        bot.send_msg(chat_id, result)
+        # 6b: Voice
+        try:
+            vp = self._gen_voice(result[:400])
+            if vp:
+                bot.send_voice(chat_id, vp)
+                os.remove(vp)
+        except: pass
+        # 6c: Image (use original question as prompt)
+        try:
+            self._cmd_imagine(uid, q, bot, chat_id)
+        except: pass
+        # 6d: File
+        try:
+            bot.send_text_as_file(chat_id, result, "answer.txt", "📄 Full answer")
+        except: pass
+
     def _deliver(self, uid, fmt, bot, chat_id, callback_id=None, msg_id=None):
         """Step 6: FORMAT DELIVERY — send answer as text, voice, image, or file"""
         pq = self.pending_q.pop(uid, None)
@@ -414,13 +434,8 @@ class AIEngine:
             self.pending_q[uid] = {"q": msg, "result": result, "time": time.time()}
             if bot and chat_id:
                 # ── STEP 5: GENERATE (happens inside _research / _memory_response) ──
-                # ── STEP 6: DELIVER ──
-                bot.send_msg(chat_id, result)
-                bot.send_buttons(chat_id, "Change format:", [
-                    ("🎤 Voice", f"ans_voice_{uid}"),
-                    ("🖼 Image", f"ans_image_{uid}"),
-                    ("📎 File", f"ans_file_{uid}")
-                ])
+                # ── STEP 6: DELIVER ALL FORMATS ──
+                self._deliver_all(uid, msg, result, bot, chat_id)
             return None
 
         # Casual / everything else → direct AI reply (steps 4-6 combined)
