@@ -1,0 +1,108 @@
+1. Analyze and Understand (The "What are you actually asking?" phase)
+Before doing anything else, I break down your message to understand your true intent.
+
+Grammar & Context: I look past typos or shorthand to figure out the core question.
+
+Goal Identification: I determine what kind of response you need. Are you looking for a quick factual answer, a piece of code, creative writing, or step-by-step troubleshooting?
+
+2. Gather Context and Information
+Once I know what you need, I collect the right pieces to build the answer:
+
+Current Conversation: I look at what we've been talking about so far so I don't repeat myself and can keep the momentum going.
+
+Internal Knowledge: I access a massive database of learned information covering language, science, history, coding, and more.
+
+External Tools (When Needed): If you ask about real-time events, current weather, or highly specific recent facts, I will use a search tool to get up-to-date information.
+
+3. Draft and Filter the Response
+Next, I piece the answer together behind the scenes, applying a few strict rules:
+
+Clarity and Layout: I organize the information using formatting tools like headers, bullet points, and bold text so it’s easy to skim and read.
+
+Tone Matching: I adapt how I talk to match your energy. If you're being casual, I'll be casual. If you need strict technical help, I'll give it to you straight.
+
+Accuracy Check: I quickly verify that the explanation makes sense and directly answers your prompt without unnecessary fluff.
+
+4. Deliver and Adapt
+Finally, I send the response over to you. Because this is a conversation, the process doesn't truly end until you have what you need—if my first answer misses a detail or sparks a new question, we just jump back to step one and refine it!
+
+Read the question – I identify what you're asking and any important details.
+Understand the goal – I determine whether you want information, an explanation, instructions, advice, calculations, writing help, etc.
+Use relevant knowledge – I draw on my training and, when needed, search for up-to-date information.
+Reason through the answer – I connect facts, check for consistency, and organize the response.
+Write the response – I tailor the answer to your question and level of detail requested.
+Revise before sending – I do a final check for clarity and correctness.
+
+For example, if you ask:
+
+"How much is this watch worth?"
+
+I would:
+
+Look at the images.
+Try to identify the brand and model.
+Check whether the watch appears authentic.
+Estimate a value range based on visible details.
+Explain how certain or uncertain the estimate is.
+My Step-by-Step Process:
+
+Understand the Query
+I first read and interpret what you actually mean — including fixing spelling/grammar issues (like in your message), understanding context, and detecting intent (serious question, joke, request for help, etc.).
+Check for Special Cases
+Do I need tools? (web search, code execution, file reading, X/Twitter search, etc.)
+Does it require real-time information or calculation?
+
+Reason Step by Step (Chain of Thought)
+I internally break down the problem logically before answering. This helps me avoid hallucinations and give better answers.
+Gather Information (if needed)
+I use tools when my built-in knowledge isn't enough or when freshness matters (news, current events, specific data).
+Formulate the Answer
+Be truthful and maximally helpful.
+Use clear, natural language.
+Add humor or directness when it fits (I'm Grok, after all).
+Structure the response (bullet points, numbered steps, etc.) for readability.
+
+Review & Refine
+I check: Is this accurate? Is it useful? Can I make it clearer or more complete?
+Respond
+I output the final answer. If relevant, I can use images, citations, code, or files.
+
+
+Example of My Thinking (for your question):
+
+Query = "Explain how you answer questions"
+Intent = Wants transparency about my reasoning process
+No tools needed (this is about me)
+Answer should be clear and structured
+
+Step 1: Read and Break Down Your Prompt
+I don't read text the way humans do; I break your sentence down into smaller mathematical tokens. During this millisecond, I figure out:
+
+Your True Intent: Are you asking for factual information, a piece of code, a creative story, or help fixing an error?
+
+Context: I look back at the previous messages in our chat so I don't forget what we are already talking about.
+
+Step 2: Retrieve the Right Information
+Once I know what you want, I have to find the data to build the answer. I pull from two main places:
+
+My Core Knowledge: This is the massive database of facts, programming languages, and text patterns I was trained on.
+
+Live Search Tools: If you ask about something current (like the weather today or a news event happening in 2026), I immediately trigger a search tool to get the latest web facts, rather than guessing.
+
+Step 3: Filter and Sort the Data
+I don't just dump all the data at you. I filter it based on strict rules:
+
+Fact-Checking: I cross-reference the data to make sure it is accurate and relevant to your exact question.
+
+
+Step 4: Format and Shape the Text
+Now, I draft the actual words you see on screen. I design the layout specifically to be easy on your eyes:
+
+I use bolding to highlight the most important phrases so you can skim-read.
+
+I use bullet points and numbered lists to break down heavy blocks of text.
+
+I adapt my tone. If you ask a quick, casual question, I give a direct, casual answer. If you ask a complex technical question, I switch to precise, clear steps.
+
+Step 5: Output and Wait for Your Feedback
+The final text is generated and sent to your screen. Because I am an AI, I don't "remember" things the way humans do after the conversation ends, so I rely on you to tell me if I nailed it or if we need to adjust the answer.

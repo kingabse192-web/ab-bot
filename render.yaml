@@ -1,9 +1,10 @@
 services:
-  - type: worker
+  - type: web
     name: ab-bot
     runtime: python
     buildCommand: ""
     startCommand: python3 main.py
+    healthCheckPath: /health
     envVars:
       - key: AB_TOKEN
         sync: false

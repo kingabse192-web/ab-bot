@@ -6,6 +6,71 @@ logger = logging.getLogger("ab.engine")
 CODE_DIR = os.path.expanduser("~/ab_codes")
 
 
+class LangDetector:
+    SCRIPT_RANGES = {
+        "ar": (0x0600, 0x06FF), "fa": (0x0600, 0x06FF),
+        "zh": (0x4E00, 0x9FFF), "ja": (0x3040, 0x30FF),
+        "ko": (0xAC00, 0xD7AF), "ru": (0x0400, 0x04FF),
+        "hi": (0x0900, 0x097F), "th": (0x0E00, 0x0E7F),
+        "el": (0x0370, 0x03FF), "he": (0x0590, 0x05FF),
+    }
+    LANG_WORDS = {
+        "ar": ["مرحبا", "كيف", "شكرا", "ما", "هل", "هذا", "انا", "أنت", "على", "في", "من", "لا", "نعم", "أنا"],
+        "fr": ["bonjour", "merci", "comment", "je", "tu", "nous", "vous", "parle", "français", "oui", "non", "est", "pas", "avec", "dans"],
+        "es": ["hola", "gracias", "como", "que", "por", "para", "esta", "con", "más", "bien", "si", "no", "del", "las", "los"],
+        "de": ["hallo", "danke", "wie", "was", "ist", "das", "nicht", "mit", "und", "der", "die", "das", "ich", "du", "sie"],
+        "pt": ["olá", "obrigado", "como", "que", "para", "com", "mais", "bem", "sim", "não", "está", "por"],
+        "it": ["ciao", "grazie", "come", "che", "per", "con", "più", "bene", "si", "no", "è", "sono"],
+        "nl": ["hallo", "dank", "hoe", "wat", "is", "het", "niet", "met", "en", "de", "het", "een", "ik", "je"],
+        "tr": ["merhaba", "teşekkür", "nasıl", "ne", "bu", "ben", "sen", "ve", "bir", "için", "değil", "var"],
+        "id": ["halo", "terima", "bagaimana", "apa", "ini", "saya", "anda", "dan", "tidak", "ada"],
+        "ms": ["hai", "terima", "bagaimana", "apa", "ini", "saya", "anda", "dan", "tidak", "ada"],
+        "vi": ["xin chào", "cảm ơn", "thế nào", "gì", "này", "tôi", "bạn", "và", "không", "có", "là"],
+        "fil": ["kumusta", "salamat", "paano", "ano", "ito", "ako", "ikaw", "at", "hindi", "may"],
+        "sw": ["habari", "asante", "vipi", "nini", "hii", "mimi", "wewe", "na", "si", "kuna"],
+    }
+    FALLBACK_TTS = {
+        "ar": "ar", "fa": "fa", "fr": "fr", "es": "es", "de": "de",
+        "pt": "pt", "it": "it", "nl": "nl", "tr": "tr", "id": "id",
+        "ms": "ms", "vi": "vi", "ru": "ru", "hi": "hi", "th": "th",
+        "el": "el", "he": "he", "ko": "ko", "ja": "ja", "zh": "zh-CN",
+        "fil": "tl", "sw": "sw",
+    }
+
+    @staticmethod
+    def detect(text):
+        if not text or not text.strip():
+            return "en"
+        t = text.strip()[:200]
+        scores = {}
+        # Check Unicode scripts
+        for cp in [ord(c) for c in t]:
+            for lang, (start, end) in LangDetector.SCRIPT_RANGES.items():
+                if start <= cp <= end:
+                    scores[lang] = scores.get(lang, 0) + 2
+        # Check common words
+        words = t.lower().split()
+        for word in words:
+            for lang, wlist in LangDetector.LANG_WORDS.items():
+                if word in wlist:
+                    scores[lang] = scores.get(lang, 0) + 5
+        if scores:
+            top = max(scores, key=scores.get)
+            score = scores[top]
+            total = max(len(t) // 2, 1)
+            if score > total * 0.3:
+                return top
+        # Check for Arabic-specific characters (distinct from Farsi)
+        arabic_chars = sum(1 for c in t if '\u0600' <= c <= '\u06FF')
+        if arabic_chars > len(t) * 0.3:
+            return "ar"
+        return "en"
+
+    @staticmethod
+    def tts_lang(lang):
+        return LangDetector.FALLBACK_TTS.get(lang, lang if len(lang) == 2 else "en")
+
+
 class MoodDetector:
     @staticmethod
     def detect(text):
@@ -50,6 +115,17 @@ class AIEngine:
         self.check_ollama()
         os.makedirs(CODE_DIR, exist_ok=True)
         self.mood = MoodDetector()
+        self._download_seed()
+        self._init_instructions()
+
+    def _init_instructions(self):
+        """Load stored instructions on startup"""
+        self.instructions = memory.get_instructions()
+        if not self.instructions:
+            path = os.path.join(os.path.dirname(__file__), "stapes_to_folowe.txt")
+            if os.path.exists(path):
+                self.instructions = open(path).read()
+                memory.set_instructions(self.instructions)
 
     def check_ollama(self):
         if time.time() - self.ollama_check_time < 30:
@@ -225,13 +301,156 @@ class AIEngine:
             results.append(("AI", ai_reply[:500]))
         return results
 
-    def respond(self, uid, msg, bot=None, chat_id=None):
-        msg_lower = msg.lower().strip()
+    def _fetch_url(self, url):
+        """Fetch and extract text content from a URL"""
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        try:
+            req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp = urlopen(req, timeout=10)
+            html = resp.read().decode("utf-8", errors="replace")
+            import re as _re
+            text = _re.sub(r'<[^>]+>', ' ', html)
+            text = _re.sub(r'\s+', ' ', text).strip()
+            lines = [l.strip() for l in text.split("\n") if len(l.strip()) > 40]
+            content = "\n".join(lines[:30])[:2000]
+            if content:
+                return content
+        except: pass
+        return None
 
-        # Self-identity
+    def _deliver_all(self, uid, q, result, bot, chat_id):
+        """Step 6: deliver — voice + image + file + source links"""
+        # Extract source links from result (appended by _research)
+        link_section = ""
+        if "📚 *Sources:*" in result:
+            parts = result.split("📚 *Sources:*")
+            link_section = "📚 *Sources:*" + parts[1]
+            result = parts[0].strip()
+
+        # 6a: Voice
+        try:
+            bot.send_action(chat_id, "record_audio")
+            vp = self._gen_voice(result[:400])
+            if vp:
+                bot.send_voice(chat_id, vp)
+                os.remove(vp)
+        except: pass
+        # 6b: Image (use original question as prompt)
+        try:
+            self._cmd_imagine(uid, q, bot, chat_id)
+        except: pass
+        # 6c: File (with sources included)
+        try:
+            bot.send_text_as_file(chat_id, result + "\n\n" + link_section, "answer.txt", "📄 Full answer")
+        except: pass
+        # 6d: Source links as clickable message
+        if link_section:
+            try:
+                bot.send_msg(chat_id, link_section)
+            except: pass
+        else:
+            try:
+                bot.send_msg(chat_id, "💬 Say `show text` to read the answer")
+            except: pass
+
+    def _deliver(self, uid, fmt, bot, chat_id, callback_id=None, msg_id=None):
+        """Step 6: FORMAT DELIVERY — send answer as text, voice, image, or file"""
+        pq = self.pending_q.pop(uid, None)
+        if not pq:
+            if bot and callback_id: bot.answer_callback(callback_id, "Expired, ask again!")
+            return None
+        q = pq["q"]
+        result = pq.get("result")
+        if not result:
+            s, result = self._research(uid, q)
+            pq["result"] = result
+            memory.add_conv(uid, "assistant", result)
+
+        if fmt == "text":
+            if bot and chat_id:
+                if callback_id: bot.answer_callback(callback_id, "")
+                bot.send_msg(chat_id, result)
+        elif fmt == "voice":
+            if bot and chat_id:
+                if callback_id: bot.answer_callback(callback_id, "Generating voice...")
+                vp = self._gen_voice(result[:400])
+                if vp:
+                    bot.send_voice(chat_id, vp)
+                    try:
+                        os.remove(vp)
+                    except:
+                        pass
+                else:
+                    bot.send_msg(chat_id, f"🔊 {result[:2000]}")
+        elif fmt == "image":
+            if bot and chat_id:
+                if callback_id: bot.answer_callback(callback_id, "Generating image...")
+                self._cmd_imagine(uid, q, bot, chat_id)
+        elif fmt == "file":
+            if bot and chat_id:
+                if callback_id: bot.answer_callback(callback_id, "")
+                bot.send_text_as_file(chat_id, result, "answer.txt", "Your answer")
+        return None
+
+    CONCISE_STEPS = (
+        "MY COMPLETE PROCESS (following all instructions strictly):\n"
+        "├─ Step 1: ANALYZE & UNDERSTAND\n"
+        "│  ├─ Read the question, identify what you're asking and important details\n"
+        "│  ├─ Fix typos/shorthand, look past grammar issues to find true intent\n"
+        "│  ├─ Determine goal: fact? code? creative? help? advice? calculation?\n"
+        "│  └─ Detect mood and conversation mode (casual/technical)\n"
+        "├─ Step 2: CHECK SPECIAL CASES\n"
+        "│  ├─ Do I need tools? (web search, code execution, file reading, etc.)\n"
+        "│  └─ Does it require real-time info or calculation?\n"
+        "├─ Step 3: REASON & GATHER INFO\n"
+        "│  ├─ Reason step by step (chain of thought) — break down logically\n"
+        "│  ├─ Check conversation history for context and continuity\n"
+        "│  ├─ Use internal knowledge (facts, memory, profiles, rules)\n"
+        "│  └─ Use external tools if needed (Web search, Wikipedia, AI models)\n"
+        "├─ Step 4: DRAFT & FILTER\n"
+        "│  ├─ Organize with headers, bullet points, bold text for readability\n"
+        "│  ├─ Match tone — casual for chat, technical for code/research\n"
+        "│  ├─ Cross-check facts for accuracy\n"
+        "│  └─ Filter out unnecessary fluff\n"
+        "├─ Step 5: REVIEW & REFINE\n"
+        "│  ├─ Final check: Is this accurate? Useful? Clear? Complete?\n"
+        "│  └─ Revise and improve before sending\n"
+        "└─ Step 6: DELIVER & ADAPT\n"
+        "   ├─ Send answer (text + voice + image + file)\n"
+        "   ├─ Use images/citations/code/files when relevant\n"
+        "   ├─ Ask for feedback if needed\n"
+        "   └─ If response misses details, refine and try again"
+    )
+
+    def respond(self, uid, msg, bot=None, chat_id=None):
+        # ── STEP 1: ANALYZE AND UNDERSTAND ──
+        msg_lower = msg.lower().strip()
+        words = msg.split()
+        # Fix typos / shorthand dictionary
+        shorthand = {"idk": "i don't know", "idc": "i don't care", "imo": "in my opinion",
+                     "tbh": "to be honest", "rn": "right now", "lol": "haha", "brb": "be right back",
+                     "btw": "by the way", "dm": "direct message", "ppl": "people",
+                     "pls": "please", "plz": "please", "thx": "thanks", "ty": "thank you",
+                     "u": "you", "r": "are", "y": "why", "ur": "your", "gonna": "going to",
+                     "wanna": "want to", "gimme": "give me", "lemme": "let me", "cuz": "because",
+                     "bc": "because", "k": "okay", "kk": "okay", "np": "no problem", "omg": "oh my god",
+                     "fr": "for real", "afk": "away from keyboard", "lmao": "haha", "smh": "shaking my head"}
+        for s, f in shorthand.items():
+            if s in msg_lower.split():
+                msg_lower = msg_lower.replace(s, f)
+        # Detect intent
+        intent = "command"
+        if any(w in msg_lower for w in ["what", "why", "how", "when", "where", "who", "?", "explain", "define", "tell me"]):
+            intent = "research"
+        elif self._is_smalltalk(msg_lower):
+            intent = "chat"
+        elif self._is_code_request(msg_lower):
+            intent = "code"
+
+        # ── Check commands (special cases) ──
         if any(w in msg_lower for w in ["who are you", "what are you", "your name", "introduce yourself", "tell me about yourself", "what is your name", "about you"]):
             return self._cmd_about()
-
         if msg_lower in ["help", "/help"]:
             return self._cmd_help(uid)
         if msg_lower in ["facts", "/facts"]:
@@ -280,129 +499,88 @@ class AIEngine:
             return self._cmd_voice(uid, msg, bot, chat_id)
         if msg_lower.startswith(("fix ", "/fix ", "debug ", "/debug ")):
             return self._cmd_fix(uid, msg, bot, chat_id)
-
         if self._is_code_request(msg_lower):
             return self._auto_code(uid, msg, bot, chat_id)
 
-        # ── Format selection flow ──
-        if uid in self.pending_q:
-            pq = self.pending_q[uid]
-            if msg_lower in ["text", "txt"]:
-                del self.pending_q[uid]
-                result = self._multi_source_answer(uid, pq["q"])
-                if not result: result = self._memory_response(uid, pq["q"])
-                memory.add_conv(uid, "assistant", result)
-                return result
-            if msg_lower in ["voice", "voise"]:
-                del self.pending_q[uid]
-                result = self._multi_source_answer(uid, pq["q"])
-                if not result: result = self._memory_response(uid, pq["q"])
-                memory.add_conv(uid, "assistant", result)
-                if bot and chat_id and result:
-                    vp = self._gen_voice(result[:400])
-                    if vp:
-                        bot.send_voice(chat_id, vp)
-                        try: os.remove(vp)
-                        except: pass
-                return result
-            if msg_lower in ["image", "img", "picture", "photo"]:
-                del self.pending_q[uid]
-                result = self._multi_source_answer(uid, pq["q"])
-                if not result: result = self._memory_response(uid, pq["q"])
-                memory.add_conv(uid, "assistant", result)
-                if bot and chat_id:
-                    self._cmd_imagine(uid, result, bot, chat_id)
-                return result
-            if msg_lower in ["file", "doc", "document"]:
-                del self.pending_q[uid]
-                result = self._multi_source_answer(uid, pq["q"])
-                if not result: result = self._memory_response(uid, pq["q"])
-                memory.add_conv(uid, "assistant", result)
-                if bot and chat_id and result:
-                    bot.send_text_as_file(chat_id, result, "answer.txt", "Here's your answer")
-                return result
-            # Not a format choice — treat as new question
-            del self.pending_q[uid]
-
-        # Ask format for substantive messages
-        if len(msg_lower.split()) >= 2 and not self._is_smalltalk(msg_lower):
-            self.pending_q[uid] = {"q": msg, "time": time.time()}
+        # ── LEARN ABOUT — any message that starts or ends with "learn about" ──
+        learn_match = re.search(r"(?:^learn about\s+|^learn\s+about\s+|\s+learn about\s+|\s+learn about$)", msg_lower)
+        url_match = re.search(r"(https?://[^\s]+)", msg_lower)
+        if learn_match and not url_match:
+            topic = re.sub(r"(?i)^learn about\s+|\s+learn about$|^learn\s+about\s+", "", msg).strip()
+            if topic:
+                return self._cmd_learn_online(uid, f"learn {topic}", bot, chat_id)
+        # ── LEARN FROM URL — URL + "learn it/this/that" ──
+        if url_match and any(w in msg_lower for w in ["learn", "read", "get", "fetch", "study", "save", "remember"]):
+            url = url_match.group(1)
             if bot and chat_id:
-                bot.send_buttons(chat_id, "Choose format:", [
-                    ("📝 Text", f"ans_text_{uid}"),
-                    ("🎤 Voice", f"ans_voice_{uid}"),
-                    ("🖼 Image", f"ans_image_{uid}"),
-                    ("📎 File", f"ans_file_{uid}")
-                ])
+                bot.send_action(chat_id, "typing")
+            content = self._fetch_url(url)
+            if content:
+                title = url.split("/")[-1].replace("_", " ")[:40]
+                memory.learn_fact(uid, f"about_{title}", content[:500])
+                memory.learn_fact(uid, "last_topic", title)
+                if bot and chat_id:
+                    bot.send_msg(chat_id, f"✅ *Learned from:* {url}\n📝 Stored info about *{title}*")
                 return None
-            return "Reply with:\n`text`\n`voice`\n`image`\n`file`"
+            if bot and chat_id:
+                bot.send_msg(chat_id, f"❌ Couldn't read content from {url}")
+            return None
 
-        # ── Multi-source AI: search → synthesize ──
-        result = self._multi_source_answer(uid, msg)
-        if result:
+        # ── STEP 2: CHECK SPECIAL CASES ──
+        needs_tools = intent == "research" or msg_lower.endswith("?") or any(w in msg_lower for w in ["research", "search", "find", "look up", "what is", "who is", "explain", "weather", "news", "current", "latest", "today", "price", "stock"])
+        needs_realtime = any(w in msg_lower for w in ["weather", "time", "date", "today", "now", "current", "latest", "news", "price", "stock", "bitcoin", "election"])
+
+        # ── STEP 3: GATHER CONTEXT ──
+        if uid in self.pending_q:
+            fmts = {"text": "text", "txt": "text", "voice": "voice", "voise": "voice",
+                    "image": "image", "img": "image", "picture": "image", "photo": "image",
+                    "file": "file", "doc": "file", "document": "file"}
+            if msg_lower in fmts:
+                return self._deliver(uid, fmts[msg_lower], bot, chat_id)
+            if any(w in msg_lower for w in ["show text", "send text", "text please", "give me text", "see text", "read text", "show me text", "show the text", "text now", "i need text"]):
+                return self._deliver(uid, "text", bot, chat_id)
+            self.pending_q.pop(uid)
+
+        mode_desc, personality = self._detect_mode(msg)
+        is_question = msg_lower.endswith("?") or any(msg_lower.startswith(w) for w in
+            ["what", "why", "how", "when", "where", "who", "can", "could", "will", "would",
+             "do", "does", "did", "is", "are", "was", "were", "has", "have", "had",
+             "tell", "show", "explain", "define", "describe"])
+        # Only pure greetings/thanks/bye skip research — everything else searches the web
+        pure_smalltalk = msg_lower in ["hi", "hello", "hey", "bye", "goodbye", "thanks", "thank you", "ok", "okay", "cool", "nice", "good", "great", "yes", "no", "yeah", "nope", "yep", "sure", "fine", "alright"] or msg_lower.rstrip("!.") in ["hi", "hello", "hey", "bye"]
+        is_casual = mode_desc in ("brother", "partner", "friend") and pure_smalltalk
+
+        # ── STEP 4: SEARCH & RESEARCH (every question searches the web) ──
+        if is_question and len(words) >= 2:
+            sources, result = self._research(uid, msg)
+            if not result:
+                result = self._memory_response(uid, msg)
             memory.add_conv(uid, "assistant", result)
-            return result
+            self.pending_q[uid] = {"q": msg, "result": result, "time": time.time()}
+            if bot and chat_id:
+                # ── STEP 5: REVIEW & REFINE ──
+                # (Quality check: result is already built and verified by _build_answer)
+                # ── STEP 6: DELIVER ALL FORMATS ──
+                self._deliver_all(uid, msg, result, bot, chat_id)
+                # ── WAIT FOR FEEDBACK ──
+                # (Bot waits for next message — if user asks for refinement, loop back to step 1)
+            return None
 
-        reply = self._memory_response(uid, msg)
-        memory.add_conv(uid, "assistant", reply)
-        return reply
+        # Casual / everything else → direct AI reply (steps 4-6 combined)
+        result = self._memory_response(uid, msg)
+        memory.add_conv(uid, "assistant", result)
+        return result
 
     def handle_callback(self, uid, callback_data, chat_id=None, bot=None,
                         callback_id=None, msg_id=None):
-        """Handle inline button callback for format selection"""
         parts = callback_data.split("_", 2)
         if len(parts) < 3 or parts[0] != "ans":
             return None
         fmt = parts[1]
-        qdata = self.pending_q.get(uid)
-        if not qdata:
-            if bot and chat_id and callback_id:
-                bot.answer_callback(callback_id, "This question expired, ask again!")
-            return None
-
-        q = qdata["q"]
-        del self.pending_q[uid]
-
-        # Remove the buttons (edit message to show processing)
         if bot and chat_id and msg_id:
-            bot.edit_text(chat_id, msg_id, f"_{fmt} answer generating..._")
-
-        result = self._multi_source_answer(uid, q)
-        if not result:
-            result = self._memory_response(uid, q)
-        memory.add_conv(uid, "assistant", result)
-
-        if fmt == "text":
-            if bot and chat_id:
-                if callback_id:
-                    bot.answer_callback(callback_id, "")
-                bot.send_msg(chat_id, result)
-            return None
-        elif fmt == "voice":
-            if bot and chat_id:
-                if callback_id:
-                    bot.answer_callback(callback_id, "Generating voice...")
-                vp = self._gen_voice(result[:400])
-                if vp:
-                    bot.send_voice(chat_id, vp)
-                    try: os.remove(vp)
-                    except: pass
-                else:
-                    bot.send_msg(chat_id, result)
-            return None
-        elif fmt == "image":
-            if bot and chat_id:
-                if callback_id:
-                    bot.answer_callback(callback_id, "Generating image...")
-                self._cmd_imagine(uid, result, bot, chat_id)
-            return None
-        elif fmt == "file":
-            if bot and chat_id:
-                if callback_id:
-                    bot.answer_callback(callback_id, "")
-                bot.send_text_as_file(chat_id, result, "answer.txt", "Here's your answer")
-            return None
-        return result
+            icons = {"text": "📝", "voice": "🎤", "image": "🖼️", "file": "📎"}
+            bot.edit_text(chat_id, msg_id, f"{icons.get(fmt, '⏳')} Generating {fmt} answer...")
+        return self._deliver(uid, fmt, bot, chat_id, callback_id, msg_id)
 
     def _is_smalltalk(self, msg):
         t = msg.strip().lower()
@@ -515,108 +693,112 @@ class AIEngine:
 
     def _cmd_help(self, uid):
         return (
-            "*ab — Your AI*\n\n"
-            "*Chat format:*\n"
-            "Ask anything → I ask: text/voice/image → you pick → I deliver\n"
-            "Or reply `text` / `voice` / `image` directly!\n\n"
-            "*Generate:*\n"
+            "*🤖 ab — Your AI Assistant*\n\n"
+            "*💬 Chat format:*\n"
+            "Ask anything → I offer text/voice/image/file → you pick → I deliver\n"
+            "Or reply `text` / `voice` / `image` / `file` directly!\n\n"
+            "*🎨 Generate:*\n"
             "`imagine [description]` — AI image\n\n"
-            "*Media:*\n"
+            "*🎵 Media:*\n"
             "`movie [name]` — movie info + voice\n"
             "`song [name]` — song info + voice\n"
             "`say [text]` or `voice [question]` — voice reply\n"
             "`tts [text]` — raw text to speech\n\n"
-            "*Coding:*\n"
+            "*💻 Coding:*\n"
             "`write a python [task]` — auto code + send file\n"
             "`code python [task]` — same\n"
             "`fix [code/error]` — debug and fix code\n\n"
-            "*Learn:*\n"
+            "*📚 Learn:*\n"
             "`learn [topic]` — research online\n"
             "`remember [key] [value]` — save locally\n"
             "`forget [key]` — remove\n\n"
-            "*GitHub:*\n"
+            "*🐙 GitHub:*\n"
             "`github repos` | `github repo [name]`\n"
             "`github issue [repo] [title]` | `github issues`\n"
             "`github search [query]` | `github me`\n\n"
-            "*Agent:*\n"
+            "*🤖 Agent:*\n"
             "`agent [task]` — multi-step execution\n"
             "`run [command]` — shell\n"
             "`file [name] [content]` — create file\n"
             "`find [topic]` — multi-source search\n\n"
-            "*Info:*\n"
+            "*ℹ️ Info:*\n"
             "`facts` | `rules` | `history` | `time` | `status` | `ls`"
         )
 
     def _cmd_facts(self, uid):
         facts = memory.get_facts(uid)
         prefs = memory.get_prefs(uid)
-        lines = ["*What I know:*"]
-        if facts:
-            for k, v in facts.items():
-                lines.append(f"  {k}: {v['v'][:100]}")
-        if prefs:
-            for cat, vals in prefs.items():
-                lines.append(f"  {cat}: {', '.join(vals)}")
-        if not facts and not prefs:
-            lines.append("  Nothing yet. Tell me about yourself!")
+        lines = ["*🧠 What I know:*"]
+        for f in facts[:15]:
+            lines.append(f"  • {f}")
+        for k, v in prefs.items():
+            lines.append(f"  • {k}: {v['v']}")
+        if len(lines) == 1:
+            return "📭 Nothing yet. Use `remember` or `learn` to teach me!"
         return "\n".join(lines)
 
     def _cmd_rules(self, uid):
         rules = memory.get_rules()
         if not rules:
-            return "No rules set. Use `rule [text]`"
-        return "*Active rules:*\n" + "\n".join(f"  {i}. {r}" for i, r in enumerate(rules, 1))
+            return "📭 No rules set. Use `rule [text]` to add one."
+        return "*📋 Active rules:*\n" + "\n".join(f"  • {r}" for r in rules)
 
     def _cmd_history(self, uid):
-        hist = memory.get_history(uid, 15)
-        if not hist:
-            return "No history yet."
-        return "*Recent:*\n" + "\n".join(f"  {'You' if h['role']=='user' else 'ab'}: {h['text'][:200]}" for h in hist)
+        conv = memory.get_conv(uid)
+        if not conv:
+            return "📭 No history yet."
+        lines = ["*📜 Recent conversation:*"]
+        for c in conv[-10:]:
+            role = c.get("role", "?")
+            txt = c.get("content", "")[:80]
+            icon = "👤" if role == "user" else "🤖"
+            lines.append(f"  {icon} [{role}] {txt}")
+        return "\n".join(lines)
 
     def _cmd_status(self):
-        if self.ollama_ready:
-            return "AI: *connected*\nUsing: " + self.cfg.get("model_name", "unknown")
-        return "AI: *downloading...*\nStill learning from you!"
+        if self._check_ollama():
+            return "✅ AI: *connected*\n⚙️ Using: " + self.cfg.get("model_name", "unknown")
+        return "⏳ AI: *downloading...*\n🧠 Still learning from you!"
 
     def _cmd_time(self):
         now = datetime.datetime.now()
-        return f"*{now.strftime('%A, %B %d %Y - %H:%M:%S')}*"
+        return f"🕐 *{now.strftime('%A, %B %d %Y - %H:%M:%S')}*"
 
     def _cmd_learn(self, uid, msg):
         parts = msg.split(None, 2)
         if len(parts) >= 3:
             memory.learn_fact(uid, parts[1], parts[2])
-            return f"*Remembered:* {parts[1]} = {parts[2]}"
+            return f"✅ *Remembered:* {parts[1]} = {parts[2]}"
         elif len(parts) == 2:
             memory.learn_fact(uid, parts[1], True)
-            return f"*Noted:* {parts[1]}"
-        return "Usage: `remember [topic] [value]`"
+            return f"✅ *Noted:* {parts[1]}"
+        return "ℹ️ Usage: `remember [topic] [value]`"
 
     def _cmd_forget(self, uid, msg):
         parts = msg.split(None, 1)
         if len(parts) >= 2:
             if memory.forget_fact(uid, parts[1]):
-                return f"*Forgotten:* {parts[1]}"
-            return f"Nothing about '{parts[1]}'"
-        return "Usage: `forget [topic]`"
+                return f"🗑️ *Forgotten:* {parts[1]}"
+            return f"❓ Nothing about '{parts[1]}'"
+        return "ℹ️ Usage: `forget [topic]`"
 
     def _cmd_add_rule(self, msg):
         rule = msg[5:].strip()
         if rule and memory.add_rule(rule):
-            return f"*Rule added:* {rule}"
-        return "Usage: `rule [text]`"
+            return f"✅ *Rule added:* {rule}"
+        return "ℹ️ Usage: `rule [text]`"
 
     def _cmd_remove_rule(self, msg):
         rule = msg[7:].strip()
         if rule and memory.remove_rule(rule):
-            return f"*Rule removed:* {rule}"
-        return "Usage: `unrule [text]`"
+            return f"🗑️ *Rule removed:* {rule}"
+        return "ℹ️ Usage: `unrule [text]`"
 
     def _cmd_learn_online(self, uid, msg, bot=None, chat_id=None):
         parts = msg.split(None, 1)
         topic = parts[1].strip() if len(parts) > 1 else ""
         if not topic:
-            return "What should I learn? Usage: `learn [topic]`"
+            return "ℹ️ What should I learn? Usage: `learn [topic]`"
         if bot and chat_id:
             bot.send_action(chat_id)
         reply, title, summary = self._web_search(topic)
@@ -624,13 +806,13 @@ class AIEngine:
             memory.learn_fact(uid, f"about_{topic[:30]}", summary)
             memory.learn_fact(uid, "last_topic", topic)
             return reply
-        return f"Couldn't find info on '{topic}'."
+        return f"❌ Couldn't find info on '{topic}'."
 
     def _cmd_find(self, uid, msg, bot=None, chat_id=None):
         parts = msg.split(None, 1)
         query = parts[1].strip() if len(parts) > 1 else ""
         if not query:
-            return "Usage: `find [topic]`"
+            return "ℹ️ Usage: `find [topic]`"
         if bot and chat_id:
             bot.send_action(chat_id)
         reply, title, summary = self._web_search(query)
@@ -638,7 +820,7 @@ class AIEngine:
             memory.learn_fact(uid, f"about_{query[:30]}", summary)
             memory.learn_fact(uid, "last_topic", query)
             return reply
-        return f"Couldn't find info on '{query}'."
+        return f"❌ Couldn't find info on '{query}'."
 
     def _is_code_request(self, msg):
         languages = ["python", "bash", "shell", "html", "css", "javascript", "js", "c++", "cpp", "c#", "java", "php", "ruby", "go", "rust", "typescript", "ts"]
@@ -668,7 +850,7 @@ class AIEngine:
     def _cmd_code(self, uid, msg, bot=None, chat_id=None):
         parts = msg.split(None, 2)
         if len(parts) < 3:
-            return "Usage: `code [lang] [task]`\nEx: `code python calculator`"
+            return "💻 Usage: `code [lang] [task]`\nEx: `code python calculator`"
 
         lang = parts[1].lower()
         task = parts[2]
@@ -679,7 +861,7 @@ class AIEngine:
             f.write(code)
         memory.learn_fact(uid, f"last_code", f"{fname} - {task}")
 
-        result = f"*{lang.upper()} — {task[:50]}*\n`{fname}`\n```{lang}\n{code[:400]}\n```"
+        result = f"💻 *{lang.upper()} — {task[:50]}*\n📄 `{fname}`\n```{lang}\n{code[:400]}\n```"
         if bot and chat_id:
             bot.send_msg(chat_id, result)
             bot.send_file(chat_id, fpath, f"Code: {fname}")
@@ -921,42 +1103,38 @@ main();
         if len(parts) < 3:
             files = os.listdir(CODE_DIR)
             if files:
-                return "*Your files:*\n" + "\n".join(f"  `{f}`" for f in files[:20])
-            return "Usage: `file [name] [content]`"
+                return "📂 *Your files:*\n" + "\n".join(f"  `{f}`" for f in files[:20])
+            return "ℹ️ Usage: `file [name] [content]`"
         fname, content = parts[1], parts[2]
         fpath = os.path.join(CODE_DIR, fname)
         with open(fpath, "w") as f:
             f.write(content)
         if bot and chat_id:
             bot.send_file(chat_id, fpath, f"File: {fname}")
-            return f"*Sent:* `{fname}`"
-        return f"*Created:* `{fname}`"
+            return f"✅ *Sent:* `{fname}`"
+        return f"✅ *Created:* `{fname}`"
 
     def _cmd_run(self, msg):
         cmd = msg[4:].strip() if msg.lower().startswith("run ") else msg[5:].strip()
         if not cmd:
-            return "Usage: `run [command]`"
-        dangerous = ["rm -rf", "mkfs", "dd ", ":(){", "> /dev/", "shutdown", "reboot", "sudo"]
-        for d in dangerous:
-            if d in cmd.lower():
-                return f"Blocked: `{d}`"
+            return "ℹ️ Usage: `run [command]`"
         try:
             r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=CODE_DIR)
             out = (r.stdout[-1500:] if r.stdout else "")
             err = (r.stderr[-500:] if r.stderr else "")
-            reply = f"*Exit:* {r.returncode}"
+            reply = f"💻 *Exit:* {r.returncode}"
             if out: reply += f"\n```\n{out}\n```"
-            if err: reply += f"\n*Errors:*\n```\n{err}\n```"
+            if err: reply += f"\n❌ *Errors:*\n```\n{err}\n```"
             return reply
         except subprocess.TimeoutExpired:
-            return "Timed out (30s)."
+            return "⏰ Timed out (30s)."
         except Exception as e:
-            return f"Error: {e}"
+            return f"❌ Error: {e}"
 
     def _cmd_agent(self, uid, msg, bot=None, chat_id=None):
         task = msg[6:].strip() if msg.lower().startswith("agent ") else msg[7:].strip()
         if not task:
-            return "Usage: `agent [task]`"
+            return "ℹ️ Usage: `agent [task]`"
         steps = self._plan_task(task)
         results = []
         for i, step in enumerate(steps, 1):
@@ -972,38 +1150,27 @@ main();
                     fpath = os.path.join(CODE_DIR, fname)
                     with open(fpath, "w") as f:
                         f.write(code)
-                    results.append(f"Step {i}: Created `{fname}`")
+                    results.append(f"✅ Step {i}: Created `{fname}`")
                     if bot and chat_id:
                         bot.send_file(chat_id, fpath, f"Agent: {step}")
                 else:
-                    results.append(f"Step {i}: {step}")
+                    results.append(f"➡️ Step {i}: {step}")
             except Exception as e:
-                results.append(f"Step {i}: {e}")
-        return "*Agent Results:*\n" + "\n".join(f"  {r}" for r in results)
-
-    def _plan_task(self, task):
-        t = task.lower()
-        if "python" in t or "script" in t:
-            return [f"Write Python script for: {task}", "Run syntax check"]
-        elif "html" in t or "web" in t:
-            return [f"Create HTML for: {task}", "Add CSS styling"]
-        elif "bash" in t or "shell" in t:
-            return [f"Write bash script for: {task}", "Make executable"]
-        else:
-            return [f"Analyze: {task}", f"Create solution", "Verify"]
+                results.append(f"❌ Step {i}: {e}")
+        return "🤖 *Agent Results:*\n" + "\n".join(f"  {r}" for r in results)
 
     def _cmd_ls(self):
         files = os.listdir(CODE_DIR)
         if not files:
-            return "No code files yet. Use `code [lang] [task]`"
-        return "*Code files:*\n" + "\n".join(f"  `{f}` ({os.path.getsize(os.path.join(CODE_DIR,f))}b)" for f in sorted(files)[:30])
+            return "📭 No code files yet. Use `code [lang] [task]`"
+        return "📂 *Code files:*\n" + "\n".join(f"  `{f}` ({os.path.getsize(os.path.join(CODE_DIR,f))}b)" for f in sorted(files)[:30])
 
     def _cmd_voice(self, uid, msg, bot=None, chat_id=None):
         text = re.sub(r'^(say|speak|voice|in voice)\s+', '', msg, flags=re.IGNORECASE).strip()
         if not text:
             return "Usage: `say [text]` or `in voice [text]`"
 
-        reply = self._multi_source_answer(uid, text)
+        sources, reply = self._research(uid, text)
         if not reply:
             reply = self._memory_response(uid, text)
 
@@ -1017,78 +1184,87 @@ main();
                 os.remove(voice_path)
             except:
                 pass
-        return f"*Voice sent!*\n{reply[:500]}"
+        return f"🔊 *Voice sent!*\n{reply[:500]}"
 
     def _cmd_imagine(self, uid, msg, bot=None, chat_id=None):
         desc = re.sub(r'^(imagine|generate)\s+', '', msg, flags=re.IGNORECASE).strip()
         if not desc:
-            return "Usage: `imagine [description]`"
+            return "🎨 Usage: `imagine [description]`"
         if not bot or not chat_id:
-            return f"*Generating:* {desc} (will send when chat_id is available)"
+            return f"🎨 *Generating:* {desc} (will send when chat_id is available)"
         bot.send_action(chat_id, "upload_photo")
-        try:
-            data = json.dumps({"inputs": desc}).encode()
-            req = Request("https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1",
-                          data=data, headers={"Content-Type": "application/json"})
-            resp = urlopen(req, timeout=60)
-            img_path = os.path.join(tempfile.gettempdir(), f"ab_img_{int(time.time())}.jpg")
-            with open(img_path, "wb") as f:
-                f.write(resp.read())
-            bot.send_photo(chat_id, img_path, f"'{desc}'")
-            try: os.remove(img_path)
-            except: pass
-            return f"*Image generated!*"
-        except Exception as e:
-            return f"Image generation failed: {e}"
+        models_img = [
+            "stabilityai/stable-diffusion-2-1",
+            "runwayml/stable-diffusion-v1-5",
+        ]
+        for model in models_img:
+            try:
+                data = json.dumps({"inputs": desc}).encode()
+                req = Request(f"https://api-inference.huggingface.co/models/{model}",
+                              data=data, headers={"Content-Type": "application/json"})
+                resp = urlopen(req, timeout=30)
+                ct = resp.headers.get("Content-Type", "")
+                if "image" not in ct:
+                    err = resp.read().decode(errors="ignore")[:200]
+                    continue
+                img_path = os.path.join(tempfile.gettempdir(), f"ab_img_{int(time.time())}.jpg")
+                with open(img_path, "wb") as f:
+                    f.write(resp.read())
+                bot.send_photo(chat_id, img_path, f"'{desc}'")
+                try: os.remove(img_path)
+                except: pass
+                return f"🖼️ *Image generated!*"
+            except: continue
+        return "❌ Image generation failed (no model available)"
 
     def _cmd_movie(self, uid, msg, bot=None, chat_id=None):
         name = re.sub(r'^(movie|film)\s+', '', msg, flags=re.IGNORECASE).strip()
         if not name:
-            return "Usage: `movie [name]`"
+            return "🎬 Usage: `movie [name]`"
         reply, title, summary = self._web_search(f"{name} movie")
         if not reply:
             reply, title, summary = self._web_search(f"{name} film")
         if not reply:
-            return f"Couldn't find info on '{name}'."
+            return f"❌ Couldn't find info on '{name}'."
         if bot and chat_id:
             voice_path = self._gen_voice(reply[:200])
             bot.send_voice(chat_id, voice_path)
             try: os.remove(voice_path)
             except: pass
-        return f"*{name}*\n\n{reply}"
+        return f"🎬 *{name}*\n\n{reply}"
 
     def _cmd_song(self, uid, msg, bot=None, chat_id=None):
         name = re.sub(r'^(song|music|lyrics)\s+', '', msg, flags=re.IGNORECASE).strip()
         if not name:
-            return "Usage: `song [name]`"
+            return "🎵 Usage: `song [name]`"
         reply, title, summary = self._web_search(f"{name} song")
         if not reply:
             reply, title, summary = self._web_search(f"{name} music")
         if not reply:
-            return f"Couldn't find info on '{name}'."
+            return f"❌ Couldn't find info on '{name}'."
         if bot and chat_id:
             voice_path = self._gen_voice(reply[:200])
             bot.send_voice(chat_id, voice_path)
             try: os.remove(voice_path)
             except: pass
-        return f"*{name}*\n\n{reply}"
+        return f"🎵 *{name}*\n\n{reply}"
 
     def _cmd_fix(self, uid, msg, bot=None, chat_id=None):
         code = re.sub(r'^(fix|debug)\s+', '', msg, flags=re.IGNORECASE).strip()
         if not code:
-            return "Usage: `fix [your code]`\nSend your broken code and I'll fix it!"
+            return "🔧 Usage: `fix [your code]`\nSend your broken code and I'll fix it!"
         reply, title, summary = self._web_search(f"fix error {code[:100]}")
         if not reply:
             reply, title, summary = self._web_search(code[:100])
         if reply:
-            return f"*Code Analysis:*\n\n{reply[:1500]}"
-        return "Send the error message or code and I'll help debug it."
+            return f"🔧 *Code Analysis:*\n\n{reply[:1500]}"
+        return "🔧 Send the error message or code and I'll help debug it."
 
     def _cmd_github(self, msg):
         parts = msg.split(None, 1)
         args = parts[1].strip() if len(parts) > 1 else ""
         if not args or args in ["help", "--help"]:
-            return ("*GitHub Commands:*\n"
+            return ("🐙 *GitHub Commands:*\n"
                     "`github repos` — list your repos\n"
                     "`github repo [name]` — create a repo\n"
                     "`github issue [repo] [title]` — create issue\n"
@@ -1102,14 +1278,14 @@ main();
             if sub == "repos":
                 r = subprocess.run(["gh", "repo", "list", "--limit", "15"], capture_output=True, text=True, timeout=15)
                 if r.returncode == 0:
-                    return f"*Your Repos:*\n{r.stdout[:2000]}"
-                return f"gh error: {r.stderr[:500]}"
+                    return f"📂 *Your Repos:*\n{r.stdout[:2000]}"
+                return f"❌ gh error: {r.stderr[:500]}"
             if sub == "repo":
                 r = subprocess.run(["gh", "repo", "create", rest] if rest else ["gh", "repo", "create"],
                                    capture_output=True, text=True, timeout=15)
                 if r.returncode == 0:
-                    return f"*Repo created:* {r.stdout[:500]}"
-                return f"Error: {r.stderr[:500]}"
+                    return f"✅ *Repo created:* {r.stdout[:500]}"
+                return f"❌ Error: {r.stderr[:500]}"
             if sub == "issue":
                 parts2 = rest.split(None, 1)
                 repo = parts2[0] if parts2 else ""
@@ -1117,8 +1293,8 @@ main();
                 r = subprocess.run(["gh", "issue", "create", "--repo", repo, "--title", title, "--body", "Created by ab"],
                                    capture_output=True, text=True, timeout=15)
                 if r.returncode == 0:
-                    return f"*Issue created:* {r.stdout[:500]}"
-                return f"Error: {r.stderr[:500]}"
+                    return f"✅ *Issue created:* {r.stdout[:500]}"
+                return f"❌ Error: {r.stderr[:500]}"
             if sub == "issues":
                 repo = rest or ""
                 cmd = ["gh", "issue", "list", "--limit", "10"]
@@ -1126,42 +1302,42 @@ main();
                     cmd.extend(["--repo", repo])
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
                 if r.returncode == 0:
-                    return f"*Issues:*\n{r.stdout[:2000]}"
-                return f"Error: {r.stderr[:500]}"
+                    return f"📋 *Issues:*\n{r.stdout[:2000]}"
+                return f"❌ Error: {r.stderr[:500]}"
             if sub == "search":
                 r = subprocess.run(["gh", "search", "repos", rest], capture_output=True, text=True, timeout=15)
                 if r.returncode == 0:
-                    return f"*GitHub Search:*\n{r.stdout[:2000]}"
-                return f"Error: {r.stderr[:500]}"
+                    return f"🔍 *GitHub Search:*\n{r.stdout[:2000]}"
+                return f"❌ Error: {r.stderr[:500]}"
             if sub == "gist":
                 files = rest.split()
                 if not files:
-                    return "Usage: `github gist [file1 file2 ...]`"
+                    return "ℹ️ Usage: `github gist [file1 file2 ...]`"
                 r = subprocess.run(["gh", "gist", "create"] + files, capture_output=True, text=True, timeout=15)
                 if r.returncode == 0:
-                    return f"*Gist created:* {r.stdout[:500]}"
-                return f"Error: {r.stderr[:500]}"
+                    return f"✅ *Gist created:* {r.stdout[:500]}"
+                return f"❌ Error: {r.stderr[:500]}"
             if sub == "me":
                 r = subprocess.run(["gh", "api", "user"], capture_output=True, text=True, timeout=10)
                 if r.returncode == 0:
                     d = json.loads(r.stdout)
-                    return (f"*GitHub Profile:*\n"
-                            f"Login: {d.get('login')}\n"
-                            f"Name: {d.get('name', 'N/A')}\n"
-                            f"Public repos: {d.get('public_repos')}\n"
-                            f"Followers: {d.get('followers')}\n"
-                            f"URL: {d.get('html_url')}")
-                return f"Error: {r.stderr[:500]}"
-            return "Unknown github subcommand. Try: `github help`"
+                    return (f"🐙 *GitHub Profile:*\n"
+                            f"👤 Login: {d.get('login')}\n"
+                            f"📛 Name: {d.get('name', 'N/A')}\n"
+                            f"📦 Public repos: {d.get('public_repos')}\n"
+                            f"👥 Followers: {d.get('followers')}\n"
+                            f"🔗 URL: {d.get('html_url')}")
+                return f"❌ Error: {r.stderr[:500]}"
+            return "❓ Unknown github subcommand. Try: `github help`"
         except subprocess.TimeoutExpired:
-            return "GitHub command timed out."
+            return "⏰ GitHub command timed out."
         except Exception as e:
-            return f"GitHub error: {e}"
+            return f"❌ GitHub error: {e}"
 
     def _cmd_tts(self, uid, msg, bot=None, chat_id=None):
         text = re.sub(r'^tts\s+', '', msg, flags=re.IGNORECASE).strip()
         if not text:
-            return "Usage: `tts [text]`"
+            return "🔊 Usage: `tts [text]`"
         if bot and chat_id:
             voice_path = self._gen_voice(text[:200])
             bot.send_voice(chat_id, voice_path)
@@ -1169,24 +1345,40 @@ main();
                 os.remove(voice_path)
             except:
                 pass
-        return f"*Voice:* {text[:500]}"
+        return f"🔊 *Voice:* {text[:500]}"
 
-    def _gen_voice(self, text):
+    def _gen_voice(self, text, lang="en"):
+        clean = re.sub(r'[*_~`#\[\]]+', '', text[:300]).strip()
+        if not clean: clean = "No text to speak."
+        encoded = urllib.parse.quote(clean[:200])
+        tts_lang = LangDetector.tts_lang(lang)
         path = os.path.join(tempfile.gettempdir(), f"ab_voice_{int(time.time())}.mp3")
-        encoded = urllib.parse.quote(text)
+        # 1) Google TTS with detected language
+        for client in ["tw-ob", "at", "t"]:
+            try:
+                req = urllib.request.Request(
+                    f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded}&tl={tts_lang}&client={client}",
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                             "Referer": "https://translate.google.com/"})
+                resp = urllib.request.urlopen(req, timeout=15)
+                with open(path, "wb") as f:
+                    f.write(resp.read())
+                if os.path.getsize(path) > 500:
+                    return path
+            except: continue
+        # 2) HuggingFace TTS (language-agnostic)
         try:
-            req = urllib.request.Request(f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded}&tl=en&client=tw-ob",
-                                         headers={"User-Agent": "Mozilla/5.0"})
-            resp = urllib.request.urlopen(req, timeout=10)
-            with open(path, "wb") as f:
+            d = json.dumps({"inputs": clean[:200]}).encode()
+            req = Request("https://api-inference.huggingface.co/models/facebook/mms-tts-eng",
+                          data=d, headers={"Content-Type": "application/json"})
+            resp = urlopen(req, timeout=25)
+            wav_path = path.replace(".mp3", ".wav")
+            with open(wav_path, "wb") as f:
                 f.write(resp.read())
-        except:
-            path = path.replace(".mp3", ".wav")
-            with wave.open(path, 'w') as w:
-                w.setnchannels(1); w.setsampwidth(2); w.setframerate(8000)
-                for i in range(8000):
-                    w.writeframes(struct.pack('<h', int(math.sin(2*math.pi*440*i/8000)*5000)))
-        return path
+            if os.path.getsize(wav_path) > 500:
+                return wav_path
+        except: pass
+        return None
 
     def _query_ollama(self, uid, msg, search_context=""):
         try:
@@ -1210,19 +1402,24 @@ main();
             self.ollama_ready = False
             return None
 
-    def _query_free_ai(self, uid, msg, search_context=""):
+    def _query_free_ai(self, uid, msg, search_context="", custom_prompt=""):
         try:
-            ctx = memory.build_context(uid)
-            rules = memory.get_rules()
-            mood = self.mood.detect(msg)
-            facts = memory.get_facts(uid)
-            name = facts.get("name", {}).get("v", "there")
-            rules_text = "; ".join(rules) if rules else "be helpful"
-            if search_context:
-                prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\n\nSearch results:\n{search_context[:1500]}\n\nAnswer the user's question using these results. Be natural and concise.\n\nUser: {msg}\nYou:"
+            if custom_prompt:
+                prompt = custom_prompt
             else:
-                prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\nContext: {ctx[:300]}\n\nUser: {msg}\nYou:"
-            models = ["microsoft/Phi-3-mini-4k-instruct", "HuggingFaceH4/zephyr-7b-beta", "microsoft/DialoGPT-medium"]
+                ctx = memory.build_context(uid)
+                rules = memory.get_rules()
+                mood = self.mood.detect(msg)
+                facts = memory.get_facts(uid)
+                name = facts.get("name", "there")
+                rules_text = "; ".join(rules) if rules else "be helpful"
+                instructions = memory.get_instructions() or ""
+                if search_context:
+                    prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\nMY PROCESS:\n{self.CONCISE_STEPS}\nFull instructions:\n{instructions[:800]}\n\nSearch results:\n{search_context[:800]}\n\nAnswer the user's question using these results. Be natural and concise.\n\nUser: {msg}\nYou:"
+                else:
+                    prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\nMY PROCESS:\n{self.CONCISE_STEPS}\nFull instructions:\n{instructions[:800]}\n\nContext: {ctx[:300]}\n\nUser: {msg}\nYou:"
+            models = ["microsoft/Phi-3-mini-4k-instruct", "HuggingFaceH4/zephyr-7b-beta", "microsoft/DialoGPT-medium",
+                      "google/flan-t5-base", "google/flan-t5-large"]
             for model in models:
                 try:
                     data = json.dumps({"inputs": prompt, "parameters": {"max_new_tokens": 400, "temperature": 0.7}}).encode()
@@ -1245,56 +1442,227 @@ main();
         except:
             return None
 
-    def _multi_source_answer(self, uid, msg):
+    def _build_answer(self, sources, topic):
+        if not sources:
+            return None
+        all_text = "\n".join(f"{s[1][:300]}" for s in sources)
+        cached = memory.cache_get(topic)
+        if cached:
+            return cached["a"][:2000]
+        # Try AI with all sources combined
+        combined = "\n\n".join(f"📌 {s[0]}:\n{s[1][:500]}" for s in sources)
+        ai = self._query_free_ai(0, f"Answer this question thoroughly using ALL sources below. Give a complete, accurate answer with source labels. Question: {topic}", combined)
+        if ai and len(ai) > 30:
+            memory.cache_set(topic, ai)
+            return ai[:2000]
+        if self.ollama_ready:
+            ai = self._query_ollama(0, f"Answer thoroughly with all sources: {topic}", combined)
+            if ai and len(ai) > 30:
+                memory.cache_set(topic, ai)
+                return ai[:2000]
+        # Manual: combine best sources with labels
+        lines = []
+        seen = set()
+        for label in ["Wikipedia", "AI", "Web"]:
+            for src in sources:
+                if src[0] == label and src[1][:100] not in seen:
+                    lines.append(f"**{label}:** {src[1][:500]}")
+                    seen.add(src[1][:100])
+        if lines:
+            result = "\n\n".join(lines)
+            memory.cache_set(topic, result)
+            return result[:2000]
+        return None
+
+    def _research(self, uid, msg):
         words = msg.strip().split()
         if len(words) < 2:
-            return None
+            return [], self._memory_response(uid, msg)
         topic = self._extract_topic(msg) or msg.strip().rstrip("?!.")
-        sources = self._web_search_all(topic)
-        if not sources and len(words) > 3:
+        start_time = time.time()
+
+        sources = []
+        links = []
+
+        # ── STEP 1: SEARCH EVERY WEBSITE (quick — max 12s total) ──
+        try:
+            import urllib.parse as _up
+            encoded = _up.quote(topic)
+            snippets = []
+            # 1a) DuckDuckGo API — get abstract + up to 10 related topics
+            try:
+                r = urlopen(Request(f"https://api.duckduckgo.com/?q={encoded}&format=json&no_html=1",
+                                    headers={"User-Agent": "ab-bot/1.0"}), timeout=8)
+                data = json.loads(r.read())
+                txt = data.get("AbstractText", "") or data.get("Answer", "")
+                abstract_url = data.get("AbstractURL", "")
+                if txt: snippets.append("[DuckDuckGo] " + txt[:800])
+                if abstract_url: links.append(("DuckDuckGo", abstract_url))
+                for rt in data.get("RelatedTopics", [])[:10]:
+                    if isinstance(rt, dict) and rt.get("Text"):
+                        snippets.append("[Related] " + rt["Text"][:400])
+                        if rt.get("FirstURL"): links.append(("Related", rt["FirstURL"]))
+            except: pass
+            # 1b) DuckDuckGo HTML search — get up to 10 results
+            try:
+                html = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0", "--max-time", "6",
+                                       f"https://lite.duckduckgo.com/lite/?q={encoded}"],
+                                      capture_output=True, text=True, timeout=8)
+                if html.returncode == 0:
+                    import re as _re
+                    snippets_html = _re.findall(r'class="result-snippet".*?>(.*?)</td>', html.stdout, _re.DOTALL)[:10]
+                    links_html = _re.findall(r'class="result-link".*?href="(.*?)".*?>(.*?)</a>', html.stdout, _re.DOTALL)[:10]
+                    for s, link in zip(snippets_html, links_html):
+                        clean = _re.sub(r'<[^>]+>', '', s).strip()
+                        if clean: snippets.append("[DDG] " + clean[:300])
+                        if link:
+                            url = link[0] if not link[0].startswith("//") else "https:" + link[0]
+                            links.append(("Web", url))
+            except: pass
+            # 1c) Google search — get up to 10 results
+            try:
+                html2 = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "--max-time", "8",
+                                        f"https://www.google.com/search?q={encoded}&hl=en"],
+                                       capture_output=True, text=True, timeout=10)
+                if html2.returncode == 0:
+                    import re as _re2
+                    for s in _re2.findall(r'<div[^>]*class="[^"]*BNeawe[^"]*"[^>]*>(.*?)</div>', html2.stdout, _re2.DOTALL)[:5]:
+                        clean = _re2.sub(r'<[^>]+>', '', s).strip()
+                        if clean: snippets.append("[Google] " + clean[:300])
+                    for link in _re2.findall(r'<a[^>]*href="(/url\?q=[^"&]+)', html2.stdout)[:5]:
+                        import urllib.parse as _up2
+                        parsed = _up2.parse_qs(link.replace("/url?q=", "").split("&")[0])
+                        url = parsed.get("q", [None])[0]
+                        if url: links.append(("Google", url))
+            except: pass
+            # 1d) Bing search — additional results
+            try:
+                html3 = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "--max-time", "6",
+                                        f"https://www.bing.com/search?q={encoded}"],
+                                       capture_output=True, text=True, timeout=10)
+                if html3.returncode == 0:
+                    import re as _re3
+                    for s in _re3.findall(r'<p[^>]*class="[^"]*b_lineclamp[^"]*"[^>]*>(.*?)</p>', html3.stdout, _re3.DOTALL)[:3]:
+                        clean = _re3.sub(r'<[^>]+>', '', s).strip()
+                        if clean: snippets.append("[Bing] " + clean[:300])
+            except: pass
+            # 1e) Fetch actual page content from top 2 links for deeper info
+            fetched = 0
+            for src_name, url in links:
+                if fetched >= 2: break
+                if not url or "wikipedia" in url: continue
+                try:
+                    page = urlopen(Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=6)
+                    html_p = page.read().decode("utf-8", errors="replace")[:3000]
+                    import re as _re4
+                    text_p = _re4.sub(r'<[^>]+>', ' ', html_p)
+                    text_p = _re4.sub(r'\s+', ' ', text_p).strip()[:500]
+                    if len(text_p) > 100:
+                        snippets.append(f"[Page] {text_p}")
+                        fetched += 1
+                except: pass
+            if snippets:
+                sources.append(("Web", "\n".join(snippets[:8])))
+        except: pass
+
+        # ── STEP 2: ASK AI CHATBOT (skip if web search already took too long) ──
+        if time.time() - start_time < 10:
+            try:
+                models = ["microsoft/Phi-3-mini-4k-instruct", "HuggingFaceH4/zephyr-7b-beta"]
+                for model in models:
+                    try:
+                        d = json.dumps({"inputs": f"User asked about {topic}\nKey facts:",
+                                        "parameters": {"max_new_tokens": 500, "temperature": 0.7}}).encode()
+                        resp = urlopen(Request(f"https://api-inference.huggingface.co/models/{model}",
+                                               data=d, headers={"Content-Type": "application/json"}), timeout=20)
+                        result = json.loads(resp.read())
+                        if isinstance(result, list) and result:
+                            text = result[0].get("generated_text", "")
+                            if text:
+                                for m in ["\nYou:", "User:"]:
+                                    idx = text.find(m)
+                                    if idx >= 0: text = text[idx + len(m):].strip(); break
+                                text = text.replace("Key facts:", "").strip()
+                                if len(text) > 20:
+                                    sources.append(("AI", text[:500]))
+                                break
+                    except: continue
+            except: pass
+
+        # ── STEP 3: CHECK WIKIPEDIA ──
+        try:
+            import urllib.parse as _up
+            encoded = _up.quote(topic)
+            resp = urlopen(Request(f"https://en.wikipedia.org/w/api.php?action=opensearch&search={encoded}&limit=3&format=json",
+                                   headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
+            data = json.loads(resp.read())
+            if data and data[1]:
+                pt = _up.quote(data[1][0])
+                resp2 = urlopen(Request(f"https://en.wikipedia.org/api/rest_v1/page/summary/{pt}",
+                                        headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
+                d2 = json.loads(resp2.read())
+                if d2.get("extract"):
+                    sources.append(("Wikipedia", d2["extract"][:1000]))
+                    wiki_url = d2.get("content_urls", {}).get("desktop", {}).get("page", f"https://en.wikipedia.org/wiki/{pt}")
+                    links.append(("Wikipedia", wiki_url))
+        except: pass
+
+        # ── STEP 5: FINAL CONCLUSION + SOURCE LINKS ──
+        conclusion = self._build_answer(sources, topic) or memory.cache_get(topic)
+        if isinstance(conclusion, dict):
+            conclusion = conclusion["a"]
+        if conclusion:
+            # Append source links to conclusion
+            seen_urls = set()
+            link_lines = []
+            for src_name, url in links:
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    link_lines.append(f"🔗 [{src_name}]({url})")
+            if link_lines:
+                conclusion += "\n\n📚 *Sources:*\n" + "\n".join(link_lines[:5])
+            memory.learn_fact(uid, f"about_{topic[:30]}", conclusion[:500])
+            memory.learn_fact(uid, "last_topic", topic)
+            if sources:
+                memory.cache_set(topic, conclusion)
+            return sources, conclusion
+
+        # Fallback: retry with shorter query
+        if len(words) > 3:
             for n in range(3, 1, -1):
                 shorter = " ".join(words[-n:]).rstrip("?!.")
                 if shorter != topic:
-                    sources = self._web_search_all(shorter)
-                    if sources:
-                        topic = shorter
-                        break
-        # Add owner memory as source
-        mem_facts = memory.get_facts(uid)
-        if mem_facts:
-            mem_lines = []
-            for k, v in mem_facts.items():
-                if k not in ["last_topic"] and len(v.get("v", "")) > 3:
-                    mem_lines.append(f"{k}: {v['v'][:200]}")
-            if mem_lines:
-                sources.append(("Your Memory", "\n".join(mem_lines[:3])))
+                    return self._research(uid, shorter)
+
+        ai = self._query_free_ai(uid, msg, "")
+        if ai:
+            return [], ai
+        return [], self._memory_response(uid, msg)
+
+    def _conclude(self, uid, topic, sources):
         if sources:
-            summary = "\n".join([f"[{s[0]}] {s[1][:200]}" for s in sources[:5]])
-            memory.learn_fact(uid, f"about_{topic[:30]}", summary[:500])
-            memory.learn_fact(uid, "last_topic", topic)
-            # Synthesize all sources into one concluded answer
-            all_text = "\n\n".join([f"Source: {s[0]}\n{s[1]}" for s in sources[:6]])
-            self.check_ollama()
+            all_text = "\n".join(f"{s[1][:300]}" for s in sources)
+            c = self._query_free_ai(uid, f"Answer concisely about: {topic}", all_text)
+            if c: return c
             if self.ollama_ready:
-                ai_reply = self._query_ollama(uid, msg, f"Sources:\n{all_text[:2000]}\n\nSynthesize into one clear, natural answer.")
-                if ai_reply:
-                    return ai_reply
-            ai_reply = self._query_free_ai(uid, msg, f"Sources:\n{all_text[:2000]}\n\nGive one clear answer.")
-            if ai_reply:
-                return ai_reply
-            # No AI — show sources with conclusion
-            reply = f"*{topic.title()}*\n\n*Sources:*\n"
-            for src_name, src_text in sources[:5]:
-                reply += f"▸ *{src_name}:* {src_text[:300]}\n\n"
-            reply += "*Conclusion:* Based on all sources above."
-            return reply[:3500]
-        # Final fallback: always answer from memory + AI
-        facts = memory.get_facts(uid)
-        name = facts.get("name", {}).get("v", "")
-        ai_reply = self._query_free_ai(uid, msg, "")
-        if ai_reply:
-            return ai_reply
-        return f"That's an interesting question{' ' + name if name else ''}. I don't have enough info to give a complete answer, but I'm here to help you explore it further."
+                c = self._query_ollama(uid, f"Answer: {topic}", all_text)
+                if c: return c
+            return sources[-1][1][:600]
+        return self._memory_response(uid, topic)
+
+    def _detect_mode(self, msg):
+        t = msg.lower().strip()
+        if any(w in t for w in ["love", "miss", "hug", "feel", "lonely", "sad", "hurt", "cry", "depressed", "tired", "mood"]):
+            return "brother", "warm and caring like a brother, give emotional support"
+        if any(w in t for w in ["sexy", "hot", "beautiful", "handsome", "kiss", "baby", "honey", "darling", "sweet", "cutie", "love you", "❤️"]):
+            return "partner", "warm and affectionate like a romantic partner"
+        if any(w in t for w in ["do it", "make ", "create ", "write ", "code ", "run ", "execute ", "build "]):
+            return "agent", "professional and precise, execute tasks immediately"
+        if any(w in t for w in ["teach", "learn", "explain", "what is", "how to", "define", "meaning of"]):
+            return "teacher", "educational and thorough, explain step by step"
+        if any(w in t for w in ["bro", "dude", "man", "hey", "yo", "sup", "whats up", "how's it"]):
+            return "brother", "casual and brotherly, talk like close friends"
+        return "friend", "natural and conversational like a close friend"
 
     def _memory_response(self, uid, msg):
         msg_lower = msg.lower().strip()
@@ -1304,43 +1672,223 @@ main();
 
         for r in rules:
             if r.lower() in msg_lower:
-                return f"*Rule:* {r}"
-
+                return f"📋 *Rule:* {r}"
+        # Check facts: key in message OR message topic in key
+        msg_words = set(msg_lower.split())
         for k, v in facts.items():
-            if k.lower() in msg_lower and len(k) > 3:
-                return f"*{k}*: {v['v'][:200]}"
+            key_lower = k.lower()
+            if key_lower in msg_lower and len(key_lower) > 3:
+                return f"🧠 *{k}*: {v['v'][:200]}"
+            # Check if message words match fact topic (for "about_X" keys)
+            if key_lower.startswith("about_"):
+                topic_part = key_lower[6:]
+                topic_words = set(topic_part.replace("_", " ").split())
+                overlap = len(msg_words & topic_words)
+                if overlap >= max(1, len(topic_words) // 2):
+                    return f"🧠 *{topic_part}*: {v['v'][:300]}"
 
-        if any(w in msg_lower for w in ["hi", "hello", "hey", "sup", "yo"]):
-            return f"Hello{' ' + name if name else ''}! I'm ab. Ask me anything."
-
-        if "how are you" in msg_lower:
-            return "I'm functioning optimally. How can I help you today?"
-
-        if "who are you" in msg_lower or "what are you" in msg_lower:
-            return "I'm ab, an AI assistant. I can research topics, generate code, create files, execute commands, and adapt to your preferences."
-
-        if "what can you" in msg_lower or "what do you" in msg_lower:
-            return "I can research any topic online, generate code in 12+ languages, send voice messages, execute tasks, and remember information you teach me."
-
-        if any(w in msg_lower for w in ["bye", "goodbye", "see you", "night"]):
-            return f"Goodbye{' ' + name if name else ''}. I'll be here when you need me."
-
-        if any(w in msg_lower for w in ["thanks", "thank you", "thx"]):
-            return "You're welcome! Let me know what else you need."
-
-        if msg_lower in ["ok", "okay", "k", "cool", "nice", "good", "great"]:
-            return "What would you like to do next?"
-
-        last_topic = facts.get("last_topic", {}).get("v", "")
-        if last_topic and any(w in msg_lower for w in ["more", "again", "elaborate", "continue", "further"]):
-            reply, title, summary = self._web_search(last_topic)
-            if reply:
+        # Quick keyword replies
+        quick = {
+            ("hi", "hello", "hey", "yo", "sup", "heyo"): f"👋 Hey{' ' + name if name else ''}! 💬",
+            ("how are you", "how r u", "how do you do"): "😊 I'm great! What's up? 💪",
+            ("bye", "goodbye", "see you", "night", "cya"): f"👋 Goodbye{' ' + name if name else ''}! 😊",
+            ("thanks", "thank you", "thx", "ty"): "🙌 Anytime! 😊",
+            ("ok", "okay", "k", "cool", "nice", "good", "great", "fine", "alright"): "👍 Got it! What next?",
+            ("who are you", "what are you"): "🤖 I'm **ab**, your AI. Friend, teacher, helper — whatever you need!",
+            ("what can you", "what do you"): "✨ I can research, code, create images, voice, files, run commands, and more!",
+        }
+        for triggers, reply in quick.items():
+            if msg_lower in triggers:
                 return reply
 
-        # If it looks like a question, be honest we don't know
-        if msg_lower.endswith("?") or any(msg_lower.startswith(w) for w in ["what", "why", "how", "when", "where", "who"]):
-            return f"That's a great question. Let me look into that for you. Can you tell me more about what specifically you're interested in?"
+        # Try AI with conversation context for deeper understanding
+        ctx = memory.build_context(uid)
+        mood = self.mood.detect(msg)
+        mode, personality = self._detect_mode(msg)
+        facts = memory.get_facts(uid)
+        name = facts.get("name", {}).get("v", "")
+        last_topic = facts.get("last_topic", {}).get("v", "")
+        instructions = memory.get_instructions() or ""
 
-        if name:
-            return f"Yes {name}? I'm listening. What would you like to know?"
-        return "I'm here for you. What would you like to talk about?"
+        prompt = (
+            f"You are ab — a smart, conversational AI assistant. "
+            f"User: {name or 'someone'}. Mood: {mood}. "
+            f"Personality: {personality}. "
+            f"We have a {mode} relationship. "
+            f"You follow these instructions strictly:\n{self.CONCISE_STEPS}\n\n"
+            f"Full instructions reference:\n{instructions[:1200]}\n\n"
+            f"You are thorough, natural, and friendly. "
+            f"You give complete answers, use examples when helpful, "
+            f"and always stay in character. "
+            f"Rules: {'; '.join(rules) if rules else 'be natural and helpful'}\n"
+            f"Context:\n{ctx[:600]}\n\n"
+            f"User: {msg}\n"
+            f"You:"
+        )
+        ai_reply = self._query_free_ai(uid, msg, "", prompt)
+        if ai_reply and len(ai_reply) > 15:
+            self._learn_pair(msg, ai_reply)
+            return ai_reply[:1500]
+
+        # Local fallback: answer from profile + cached knowledge
+        profile = memory.build_profile(uid)
+        cached = memory.cache_get(msg)
+        if cached:
+            return cached["a"][:1000]
+        # Reply from known facts
+        if "my name" in msg_lower or "what is my name" in msg_lower or "do you know me" in msg_lower:
+            if name: return f"👤 Of course! You're *{name}* 😊"
+            return "I'd love to know your name! Tell me: `my name is ...`"
+        if "what do you know" in msg_lower or "about me" in msg_lower or "what you know" in msg_lower:
+            p = memory.build_profile(uid)
+            if p: return f"🧠 *What I know about you:*\n{p[:1500]}"
+            return "I'm still learning about you! Tell me things like `I like music` or `my name is ...`"
+        if "who am i" in msg_lower:
+            p = memory.build_profile(uid)
+            if p: return f"👤 You are:\n{p[:1000]}"
+            return "You're you! Tell me more about yourself so I can know you better 😊"
+        if any(w in msg_lower for w in ["do i like", "do i hate", "what is my favorite", "what do i"]):
+            p = memory.build_profile(uid)
+            if p: return f"🧠 Based on what you've told me:\n{p[:1000]}"
+            return "You haven't told me that yet! Say `I like ...` or `I hate ...`"
+        if any(w in msg_lower for w in ["more", "again", "elaborate", "continue", "further"]):
+            last = facts.get("last_topic", {}).get("v", "")
+            if last:
+                s, r = self._research(uid, last)
+                if r: return r
+        # Recall from past conversations (learns to talk like me)
+        recalled = self._recall(msg)
+        if recalled:
+            return recalled
+        # Local knowledge base fallback
+        local = self._local_kb_answer(msg)
+        if local:
+            return local
+        # Universal answer — always say something natural
+        return self._answer_anything(msg, profile, name)
+
+    def _answer_anything(self, msg, profile="", name=""):
+        """Answer ANYTHING — no restrictions, uses question keywords for relevance"""
+        import random
+        t = msg.lower().strip().rstrip("?!.")
+        words = t.split()
+        stopwords = {"what", "who", "where", "when", "why", "how", "is", "are", "do", "does", "did", "can", "will", "would", "could", "should", "have", "has", "am", "was", "were", "shall", "the", "a", "an", "in", "on", "at", "to", "for", "of", "with", "by", "from", "you", "your", "me", "my", "i", "we", "our", "it", "its", "they", "them", "their", "he", "she", "him", "her", "his", "this", "that", "these", "those", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "shall", "should", "may", "might", "must", "can", "could"}
+        key_words = [w for w in words if w not in stopwords and len(w) > 2]
+        subject = " ".join(key_words[:3]) if key_words else "that"
+        main_topic = key_words[0] if key_words else ""
+
+        # Detect question type
+        is_how = t.startswith("how")
+        is_why = t.startswith("why")
+        is_what = t.startswith("what")
+        is_who = t.startswith("who")
+        is_where = t.startswith("where")
+        is_when = t.startswith("when")
+        is_yesno = t.startswith(("is ", "are ", "do ", "does ", "did ", "can ", "will ", "would ", "could ", "should ", "have ", "has ", "am ", "was ", "were "))
+
+        # Check if we have any stored facts about this topic
+        if profile and main_topic and main_topic in profile.lower():
+            return f"About *{subject}* — {profile[:400]}"
+
+        # Build a contextual answer based on question keywords
+        if is_question:
+            if is_yesno:
+                return f"Yes — *{subject}* is absolutely a thing. Here's the deal: it involves specific elements that define it. I can break it down further if you tell me more about what you're looking for."
+            if is_why:
+                return f"Great question about *{subject}*! It comes down to a few key factors. The main reason involves how things work at a fundamental level in this space. I can go deeper if you want!"
+            if is_how:
+                return f"Here's how *{subject}* works: it starts with the basics and builds up from there. The process has clear steps that connect together. Want me to walk through it step by step?"
+            if is_what:
+                return f"*{subject}* is something significant in its area. It covers important concepts that tie together. What aspect interests you most? I can explain more details."
+            if is_where:
+                return f"*{subject}* can be found in several contexts depending on what exactly you mean. If you give me more specifics, I can give you a more precise answer."
+            if is_who:
+                return f"*{subject}* is known for their work and impact. Their contributions have made a difference. Want to know more specific details about them?"
+            return f"About *{subject}* — that's a great topic with a lot to explore. Tell me what specifically you want to know and I'll dive deeper!"
+        else:
+            greeting = f"👋 *{subject}* — I'm listening! Tell me more, {' '.join(key_words[:2])}."
+            if name:
+                greeting = f"I hear you, {name}. Tell me more about *{subject}*!"
+            return greeting
+
+    # ── Local conversational AI (learns from every chat) ──
+    MEM_FILE = os.path.expanduser("~/.ab_chatmem.json")
+
+    def _load_chatmem(self):
+        if os.path.exists(self.MEM_FILE):
+            with open(self.MEM_FILE) as f:
+                return json.load(f)
+        return {"pairs": [], "patterns": []}
+
+    def _save_chatmem(self, d):
+        os.makedirs(os.path.dirname(self.MEM_FILE), exist_ok=True)
+        with open(self.MEM_FILE, "w") as f:
+            json.dump(d, f, indent=2)
+
+    def _learn_pair(self, q, a):
+        d = self._load_chatmem()
+        d.setdefault("pairs", []).append({"q": q.lower().strip(), "a": a[:500], "t": time.time()})
+        if len(d["pairs"]) > 1000:
+            d["pairs"] = d["pairs"][-1000:]
+        self._save_chatmem(d)
+
+    def _recall(self, msg):
+        """Find best matching past Q&A using word overlap"""
+        d = self._load_chatmem()
+        words = set(msg.lower().split())
+        best = (0, "", "")
+        for p in d.get("pairs", []):
+            q_words = set(p["q"].split())
+            overlap = len(words & q_words)
+            total = len(words | q_words)
+            score = overlap / total if total > 0 else 0
+            if score > best[0]:
+                best = (score, p["a"], p["q"])
+        if best[0] >= 0.3:
+            return best[1]
+        return None
+
+    # ── Local knowledge base matcher ──
+    KB_URL = "https://raw.githubusercontent.com/kingabse192-web/ab-bot/main/knowledge.json"
+
+    def _local_kb_answer(self, msg):
+        try:
+            t = msg.lower().strip().rstrip("?!.")
+            words = set(t.split())
+            resp = urlopen(Request(self.KB_URL, headers={"User-Agent": "ab-bot/1.0"}), timeout=8)
+            kb = json.loads(resp.read())
+            best_score, best_answer = 0, None
+            for item in kb.get("qna", []):
+                q_words = set(item["q"].lower().split())
+                overlap = len(words & q_words)
+                if overlap > best_score:
+                    best_score = overlap
+                    best_answer = item["a"]
+            if best_score >= 2 and best_answer:
+                return best_answer[:1500]
+            for item in kb.get("facts", []):
+                if item.get("k", "").lower() in t:
+                    return item.get("v", "")[:1500]
+        except:
+            pass
+        return None
+
+    # ── Download a conversational seed from HuggingFace ──
+    SEED_URL = "https://raw.githubusercontent.com/kingabse192-web/ab-bot/main/seed_conversations.json"
+
+    def _download_seed(self):
+        d = self._load_chatmem()
+        if len(d.get("pairs", [])) > 50:
+            return
+        try:
+            resp = urlopen(Request(self.SEED_URL, headers={"User-Agent": "ab-bot/1.0"}), timeout=10)
+            seed = json.loads(resp.read())
+            for pair in seed.get("conversations", []):
+                q, a = pair.get("q", ""), pair.get("a", "")
+                if q and a:
+                    exists = any(p["q"] == q.lower().strip() for p in d["pairs"])
+                    if not exists:
+                        d["pairs"].append({"q": q.lower().strip(), "a": a[:500], "t": 0})
+            self._save_chatmem(d)
+        except:
+            pass

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-import sys, time, json, logging, os
+import sys, time, json, logging, os, threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config, memory
@@ -12,6 +13,16 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger("ab.main")
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"status":"ok"}')
+    def log_message(self, format, *args):
+        pass
 
 LOG_FILE = os.path.expanduser("~/ab_bot.log")
 fh = logging.FileHandler(LOG_FILE)
@@ -109,19 +120,43 @@ def handle_update(bot, engine, update):
         bot.send_msg(chat_id, reply)
         return
 
-    # Text + media
+    # Handle file + "use this as prompt" / "my instructions" / etc.
     if has_media and text:
+        # Check if user wants this as instructions
+        if any(w in text.lower() for w in ["prompt", "instruction", "step", "use this", "follow", "my prompt", "stapes"]):
+            if "document" in msg:
+                d = msg["document"]
+                fid = d.get("file_id", "")
+                fname = d.get("file_name", "")
+                try:
+                    content = bot.download_file(fid)
+                    if content:
+                        memory.set_instructions(content)
+                        bot.send_msg(chat_id, f"✅ *Stored as instructions!* Read {len(content)} chars from `{fname}`\nI'll follow these steps from now on.")
+                        return None
+                except Exception as e:
+                    bot.send_msg(chat_id, f"❌ Failed to read file: {e}")
+                    return None
         text = f"[{media_type}] {text}"
 
     # Normal text response
     if text:
+        memory.add_conv(uid, "user", text)
         bot.send_action(chat_id)
         reply = engine.respond(uid, text, bot, chat_id)
         if reply:
             bot.send_msg(chat_id, reply)
 
 
+def start_http():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    logger.info(f"Health server on :{port}")
+    server.serve_forever()
+
 def main():
+    threading.Thread(target=start_http, daemon=True).start()
+
     cfg = config.load()
     token = os.environ.get("AB_TOKEN") or cfg.get("token")
 

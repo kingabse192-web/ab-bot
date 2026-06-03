@@ -8,9 +8,27 @@ OUTBOX = os.path.expanduser("~/.ab_outbox")
 class Bot:
     def __init__(self, token):
         self.base = API + token
-        self.offset = 0
+        self.offset = self._load_offset()
         self.verified = set()
         self.pending_codes = {}
+
+    def _offset_path(self):
+        return os.path.expanduser("~/.ab_offset")
+
+    def _load_offset(self):
+        p = self._offset_path()
+        try:
+            with open(p) as f:
+                return int(f.read().strip())
+        except:
+            return 0
+
+    def _save_offset(self):
+        try:
+            with open(self._offset_path(), "w") as f:
+                f.write(str(self.offset))
+        except:
+            pass
 
     def _enqueue(self, method, data=None, files=None):
         """Write API call to outbox for sender process to pick up"""
@@ -23,19 +41,48 @@ class Bot:
         return {"ok": True, "queued": True}
 
     def _fire(self, method, data=None):
-        """Fire-and-forget: no wait, no retry, no enqueue"""
+        """Fire-and-forget: curl → urllib → enqueue"""
         url = f"{self.base}/{method}"
-        try:
-            args = ["curl", "-s", "--max-time", "60", "--connect-timeout", "15", "-o", "/dev/null"]
-            if data is not None:
-                inp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json")
-                json.dump(data, inp)
-                inp.close()
-                args.extend(["-X", "POST", "-H", "Content-Type: application/json", "-d", f"@{inp.name}"])
-            args.append(url)
-            subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except:
-            pass
+
+        def _try_curl():
+            try:
+                env = os.environ.copy()
+                for k in list(env.keys()):
+                    if 'proxy' in k.lower():
+                        del env[k]
+                env.update({'NO_PROXY': '*', 'no_proxy': '*', 'HTTP_PROXY': '', 'HTTPS_PROXY': '', 'http_proxy': '', 'https_proxy': ''})
+                args = ["curl", "-s", "--noproxy", "*", "--max-time", "30", "--connect-timeout", "10", "-o", "/dev/null"]
+                if data is not None:
+                    inp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json")
+                    json.dump(data, inp)
+                    inp.close()
+                    args.extend(["-X", "POST", "-H", "Content-Type: application/json", "-d", f"@{inp.name}"])
+                args.append(url)
+                r = subprocess.run(args, capture_output=True, timeout=35, env=env)
+                if r.returncode == 0:
+                    return True
+                logger.warning(f"curl {method} failed (code {r.returncode}): {r.stderr[:100]}")
+                return False
+            except Exception as e:
+                logger.warning(f"curl {method} exception: {e}")
+                return False
+
+        def _try_urllib():
+            try:
+                import urllib.request
+                proxy_handler = urllib.request.ProxyHandler({})
+                opener = urllib.request.build_opener(proxy_handler)
+                body = json.dumps(data).encode() if data is not None else None
+                req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"} if data else {})
+                opener.open(req, timeout=30)
+                return True
+            except Exception as e:
+                logger.warning(f"urllib {method} failed: {e}")
+                return False
+
+        if not _try_curl():
+            if not _try_urllib():
+                self._enqueue(method, data)
 
     def _call(self, method, data=None, retries=2):
         """Run api call. Returns dict on success, None on fail (already logged)."""
@@ -44,7 +91,7 @@ class Bot:
         for attempt in range(retries):
             try:
                 inp = None
-                args = ["curl", "-s", "--max-time", "60", "--connect-timeout", "15"]
+                args = ["curl", "-s", "--noproxy", "*", "--max-time", "60", "--connect-timeout", "15"]
                 if data is not None:
                     inp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json")
                     json.dump(data, inp)
@@ -72,7 +119,12 @@ class Bot:
     def _multipart(self, method, fields, files):
         url = f"{self.base}/{method}"
         try:
-            args = ["curl", "-s", "--max-time", "120", "--connect-timeout", "15"]
+            env = os.environ.copy()
+            for k in list(env.keys()):
+                if 'proxy' in k.lower():
+                    del env[k]
+            env.update({'NO_PROXY': '*', 'no_proxy': '*', 'HTTP_PROXY': '', 'HTTPS_PROXY': '', 'http_proxy': '', 'https_proxy': ''})
+            args = ["curl", "-s", "--noproxy", "*", "--max-time", "90", "--connect-timeout", "15"]
             for k, v in fields.items():
                 args.extend(["-F", f"{k}={v}"])
             for k, (fname, data, mime) in (files or {}).items():
@@ -81,9 +133,12 @@ class Bot:
                     f.write(data)
                 args.extend(["-F", f"{k}=@{tmp};type={mime}"])
             args.append(url)
-            subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(args, capture_output=True, timeout=100, env=env)
+            return True
         except Exception as e:
             logger.error(f"Multipart upload failed: {e}")
+            self._enqueue(method, fields, files)
+            return False
 
     def send_msg(self, chat_id, text, parse_mode="Markdown"):
         self._fire("sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": parse_mode})
@@ -124,8 +179,12 @@ class Bot:
                 data = f.read()
             fname = os.path.basename(audio_path)
             ext = os.path.splitext(fname)[1].lower()
-            mime = "audio/mpeg" if ext == ".mp3" else "audio/ogg"
-            self._multipart("sendVoice", {"chat_id": chat_id}, {"voice": (fname, data, mime)})
+            if ext == ".mp3":
+                self._multipart("sendVoice", {"chat_id": chat_id}, {"voice": (fname, data, "audio/mpeg")})
+            elif ext == ".wav":
+                self._multipart("sendAudio", {"chat_id": chat_id, "title": "Answer"}, {"audio": (fname, data, "audio/wav")})
+            else:
+                self._multipart("sendVoice", {"chat_id": chat_id}, {"voice": (fname, data, "audio/ogg")})
         except Exception as e:
             logger.error(f"Send voice failed: {e}")
 
@@ -161,6 +220,8 @@ class Bot:
             if result.get("ok"):
                 for update in result.get("result", []):
                     self.offset = update["update_id"] + 1
+                if result["result"]:
+                    self._save_offset()
                 return result["result"]
         except Exception as e:
             logger.warning(f"getUpdates error: {e}")
@@ -168,7 +229,7 @@ class Bot:
         try:
             import subprocess
             r = subprocess.run(
-                ["curl", "-s", "--max-time", "15", "--connect-timeout", "10",
+                ["curl", "-s", "--noproxy", "*", "--max-time", "15", "--connect-timeout", "10",
                  "-X", "POST", "-H", "Content-Type: application/json",
                  "-d", json.dumps({"offset": self.offset, "timeout": 2, "allowed_updates": ["message", "callback_query"]}),
                  url],
@@ -179,6 +240,8 @@ class Bot:
                 if result.get("ok"):
                     for update in result.get("result", []):
                         self.offset = update["update_id"] + 1
+                    if result["result"]:
+                        self._save_offset()
                     return result["result"]
             logger.warning(f"getUpdates curl failed (code {r.returncode}): {r.stderr[:200]}")
         except Exception as e:
@@ -199,3 +262,27 @@ class Bot:
             return True
         self.send_plain(chat_id, "Wrong code. Send `start` for a new one.")
         return False
+
+    def download_file(self, file_id):
+        """Download a file from Telegram by file_id, return content as string"""
+        try:
+            url = f"https://api.telegram.org/bot{self.token}/getFile"
+            payload = json.dumps({"file_id": file_id}).encode()
+            r = subprocess.run(["curl", "-s", "--max-time", "10", "-X", "POST",
+                               "-H", "Content-Type: application/json",
+                               "-d", payload, url],
+                              capture_output=True, timeout=15)
+            if r.returncode != 0:
+                return None
+            result = json.loads(r.stdout)
+            if not result.get("ok"):
+                return None
+            file_path = result["result"]["file_path"]
+            dl_url = f"https://api.telegram.org/file/bot{self.token}/{file_path}"
+            r2 = subprocess.run(["curl", "-s", "--max-time", "15", dl_url],
+                               capture_output=True, timeout=20)
+            if r2.returncode == 0 and r2.stdout:
+                return r2.stdout.decode("utf-8", errors="replace")
+        except:
+            pass
+        return None
