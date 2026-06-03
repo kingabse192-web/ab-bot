@@ -1474,58 +1474,85 @@ main();
         sources = []
         links = []
 
-        # ── STEP 1: SEARCH THE WEB (multiple sources) ──
+        # ── STEP 1: SEARCH EVERY WEBSITE (thorough multi-source crawling) ──
         try:
             import urllib.parse as _up
             encoded = _up.quote(topic)
             snippets = []
-            # 1a) DuckDuckGo API
+            # 1a) DuckDuckGo API — get abstract + up to 10 related topics
             try:
                 r = urlopen(Request(f"https://api.duckduckgo.com/?q={encoded}&format=json&no_html=1",
                                     headers={"User-Agent": "ab-bot/1.0"}), timeout=8)
                 data = json.loads(r.read())
                 txt = data.get("AbstractText", "") or data.get("Answer", "")
                 abstract_url = data.get("AbstractURL", "")
-                if txt: snippets.append("[DuckDuckGo] " + txt[:600])
+                if txt: snippets.append("[DuckDuckGo] " + txt[:800])
                 if abstract_url: links.append(("DuckDuckGo", abstract_url))
-                for rt in data.get("RelatedTopics", [])[:3]:
+                for rt in data.get("RelatedTopics", [])[:10]:
                     if isinstance(rt, dict) and rt.get("Text"):
-                        snippets.append("[Related] " + rt["Text"][:300])
+                        snippets.append("[Related] " + rt["Text"][:400])
                         if rt.get("FirstURL"): links.append(("Related", rt["FirstURL"]))
             except: pass
-            # 1b) DuckDuckGo HTML search
+            # 1b) DuckDuckGo HTML search — get up to 10 results
             try:
-                html = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0", "--max-time", "5",
+                html = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0", "--max-time", "6",
                                        f"https://lite.duckduckgo.com/lite/?q={encoded}"],
                                       capture_output=True, text=True, timeout=8)
                 if html.returncode == 0:
                     import re as _re
-                    for s, link in zip(
-                        _re.findall(r'class="result-snippet".*?>(.*?)</td>', html.stdout, _re.DOTALL)[:3],
-                        _re.findall(r'class="result-link".*?href="(.*?)".*?>(.*?)</a>', html.stdout, _re.DOTALL)[:3]
-                    ):
+                    snippets_html = _re.findall(r'class="result-snippet".*?>(.*?)</td>', html.stdout, _re.DOTALL)[:10]
+                    links_html = _re.findall(r'class="result-link".*?href="(.*?)".*?>(.*?)</a>', html.stdout, _re.DOTALL)[:10]
+                    for s, link in zip(snippets_html, links_html):
                         clean = _re.sub(r'<[^>]+>', '', s).strip()
-                        if clean: snippets.append(clean[:250])
-                        if link: links.append(("Web", link[0] if not link[0].startswith("//") else "https:" + link[0]))
+                        if clean: snippets.append("[DDG] " + clean[:300])
+                        if link:
+                            url = link[0] if not link[0].startswith("//") else "https:" + link[0]
+                            links.append(("Web", url))
             except: pass
-            # 1c) Google search via scraping
+            # 1c) Google search — get up to 10 results
             try:
-                html2 = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "--max-time", "6",
+                html2 = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "--max-time", "8",
                                         f"https://www.google.com/search?q={encoded}&hl=en"],
                                        capture_output=True, text=True, timeout=10)
                 if html2.returncode == 0:
                     import re as _re2
-                    for s in _re2.findall(r'<div[^>]*class="[^"]*BNeawe[^"]*"[^>]*>(.*?)</div>', html2.stdout, _re2.DOTALL)[:2]:
+                    for s in _re2.findall(r'<div[^>]*class="[^"]*BNeawe[^"]*"[^>]*>(.*?)</div>', html2.stdout, _re2.DOTALL)[:5]:
                         clean = _re2.sub(r'<[^>]+>', '', s).strip()
                         if clean: snippets.append("[Google] " + clean[:300])
-                    for link in _re2.findall(r'<a[^>]*href="(/url\?q=[^"&]+)', html2.stdout)[:3]:
+                    for link in _re2.findall(r'<a[^>]*href="(/url\?q=[^"&]+)', html2.stdout)[:5]:
                         import urllib.parse as _up2
                         parsed = _up2.parse_qs(link.replace("/url?q=", "").split("&")[0])
                         url = parsed.get("q", [None])[0]
                         if url: links.append(("Google", url))
             except: pass
+            # 1d) Bing search — additional results
+            try:
+                html3 = subprocess.run(["curl", "-s", "-L", "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "--max-time", "6",
+                                        f"https://www.bing.com/search?q={encoded}"],
+                                       capture_output=True, text=True, timeout=10)
+                if html3.returncode == 0:
+                    import re as _re3
+                    for s in _re3.findall(r'<p[^>]*class="[^"]*b_lineclamp[^"]*"[^>]*>(.*?)</p>', html3.stdout, _re3.DOTALL)[:3]:
+                        clean = _re3.sub(r'<[^>]+>', '', s).strip()
+                        if clean: snippets.append("[Bing] " + clean[:300])
+            except: pass
+            # 1e) Fetch actual page content from top 2 links for deeper info
+            fetched = 0
+            for src_name, url in links:
+                if fetched >= 2: break
+                if not url or "wikipedia" in url: continue
+                try:
+                    page = urlopen(Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=6)
+                    html_p = page.read().decode("utf-8", errors="replace")[:3000]
+                    import re as _re4
+                    text_p = _re4.sub(r'<[^>]+>', ' ', html_p)
+                    text_p = _re4.sub(r'\s+', ' ', text_p).strip()[:500]
+                    if len(text_p) > 100:
+                        snippets.append(f"[Page] {text_p}")
+                        fetched += 1
+                except: pass
             if snippets:
-                sources.append(("Web", "\n".join(snippets[:5])))
+                sources.append(("Web", "\n".join(snippets[:8])))
         except: pass
 
         # ── STEP 2: ASK AI CHATBOT ──
@@ -1534,9 +1561,9 @@ main();
             for model in models:
                 try:
                     d = json.dumps({"inputs": f"User asked about {topic}\nKey facts:",
-                                    "parameters": {"max_new_tokens": 300, "temperature": 0.7}}).encode()
+                                    "parameters": {"max_new_tokens": 500, "temperature": 0.7}}).encode()
                     resp = urlopen(Request(f"https://api-inference.huggingface.co/models/{model}",
-                                           data=d, headers={"Content-Type": "application/json"}), timeout=15)
+                                           data=d, headers={"Content-Type": "application/json"}), timeout=20)
                     result = json.loads(resp.read())
                     if isinstance(result, list) and result:
                         text = result[0].get("generated_text", "")
@@ -1564,7 +1591,7 @@ main();
                                         headers={"User-Agent": "ab-bot/1.0"}), timeout=5)
                 d2 = json.loads(resp2.read())
                 if d2.get("extract"):
-                    sources.append(("Wikipedia", d2["extract"][:700]))
+                    sources.append(("Wikipedia", d2["extract"][:1000]))
                     wiki_url = d2.get("content_urls", {}).get("desktop", {}).get("page", f"https://en.wikipedia.org/wiki/{pt}")
                     links.append(("Wikipedia", wiki_url))
         except: pass
