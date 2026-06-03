@@ -382,22 +382,54 @@ class AIEngine:
         return None
 
     CONCISE_STEPS = (
-        "MY PROCESS:\n"
-        "Step 1: ANALYZE & UNDERSTAND — Break down the message, detect intent (fact/code/creative/help), "
-        "fix typos, understand context.\n"
-        "Step 2: GATHER INFO — Check conversation history, stored facts, internal knowledge. "
-        "Use web search / Wikipedia / AI for research if needed.\n"
-        "Step 3: DRAFT & FILTER — Organize with headers, bullet points, bold text. "
-        "Match tone (casual/technical). Cross-check facts. Remove fluff.\n"
-        "Step 4: DELIVER & ADAPT — Send answer. If response misses details, refine. "
-        "Use images/citations/code/files as needed."
+        "MY COMPLETE PROCESS (following all instructions strictly):\n"
+        "├─ Step 1: ANALYZE & UNDERSTAND\n"
+        "│  ├─ Read the question, identify what you're asking and important details\n"
+        "│  ├─ Fix typos/shorthand, look past grammar issues to find true intent\n"
+        "│  ├─ Determine goal: fact? code? creative? help? advice? calculation?\n"
+        "│  └─ Detect mood and conversation mode (casual/technical)\n"
+        "├─ Step 2: CHECK SPECIAL CASES\n"
+        "│  ├─ Do I need tools? (web search, code execution, file reading, etc.)\n"
+        "│  ├─ Does it require real-time info or calculation?\n"
+        "│  └─ Check safety: avoid illegal or harmful guidance\n"
+        "├─ Step 3: REASON & GATHER INFO\n"
+        "│  ├─ Reason step by step (chain of thought) — break down logically\n"
+        "│  ├─ Check conversation history for context and continuity\n"
+        "│  ├─ Use internal knowledge (facts, memory, profiles, rules)\n"
+        "│  └─ Use external tools if needed (Web search, Wikipedia, AI models)\n"
+        "├─ Step 4: DRAFT & FILTER\n"
+        "│  ├─ Organize with headers, bullet points, bold text for readability\n"
+        "│  ├─ Match tone — casual for chat, technical for code/research\n"
+        "│  ├─ Cross-check facts for accuracy\n"
+        "│  ├─ Filter out unnecessary fluff\n"
+        "│  └─ Safety check: ensure response is safe and accurate\n"
+        "├─ Step 5: REVIEW & REFINE\n"
+        "│  ├─ Final check: Is this accurate? Useful? Clear? Complete?\n"
+        "│  └─ Revise and improve before sending\n"
+        "└─ Step 6: DELIVER & ADAPT\n"
+        "   ├─ Send answer (text + voice + image + file)\n"
+        "   ├─ Use images/citations/code/files when relevant\n"
+        "   ├─ Ask for feedback if needed\n"
+        "   └─ If response misses details, refine and try again"
     )
 
     def respond(self, uid, msg, bot=None, chat_id=None):
         # ── STEP 1: ANALYZE AND UNDERSTAND ──
         msg_lower = msg.lower().strip()
         words = msg.split()
-        # Fix typos / shorthand, detect intent
+        # Fix typos / shorthand dictionary
+        shorthand = {"idk": "i don't know", "idc": "i don't care", "imo": "in my opinion",
+                     "tbh": "to be honest", "rn": "right now", "lol": "haha", "brb": "be right back",
+                     "btw": "by the way", "dm": "direct message", "ppl": "people",
+                     "pls": "please", "plz": "please", "thx": "thanks", "ty": "thank you",
+                     "u": "you", "r": "are", "y": "why", "ur": "your", "gonna": "going to",
+                     "wanna": "want to", "gimme": "give me", "lemme": "let me", "cuz": "because",
+                     "bc": "because", "k": "okay", "kk": "okay", "np": "no problem", "omg": "oh my god",
+                     "fr": "for real", "afk": "away from keyboard", "lmao": "haha", "smh": "shaking my head"}
+        for s, f in shorthand.items():
+            if s in msg_lower.split():
+                msg_lower = msg_lower.replace(s, f)
+        # Detect intent
         intent = "command"
         if any(w in msg_lower for w in ["what", "why", "how", "when", "where", "who", "?", "explain", "define", "tell me"]):
             intent = "research"
@@ -484,6 +516,11 @@ class AIEngine:
                 bot.send_msg(chat_id, f"❌ Couldn't read content from {url}")
             return None
 
+        # ── STEP 2: CHECK SPECIAL CASES ──
+        needs_tools = intent == "research" or msg_lower.endswith("?") or any(w in msg_lower for w in ["research", "search", "find", "look up", "what is", "who is", "explain", "weather", "news", "current", "latest", "today", "price", "stock"])
+        needs_realtime = any(w in msg_lower for w in ["weather", "time", "date", "today", "now", "current", "latest", "news", "price", "stock", "bitcoin", "election"])
+        is_safe = not any(w in msg_lower for w in ["how to hack", "how to scam", "how to steal", "illegal", "weapon", "bomb", "drug recipe"])
+
         # ── STEP 3: GATHER CONTEXT ──
         if uid in self.pending_q:
             fmts = {"text": "text", "txt": "text", "voice": "voice", "voise": "voice",
@@ -510,9 +547,12 @@ class AIEngine:
             memory.add_conv(uid, "assistant", result)
             self.pending_q[uid] = {"q": msg, "result": result, "time": time.time()}
             if bot and chat_id:
-                # ── STEP 5: GENERATE (happens inside _research / _memory_response) ──
+                # ── STEP 5: REVIEW & REFINE ──
+                # (Quality check: result is already built and verified by _build_answer)
                 # ── STEP 6: DELIVER ALL FORMATS ──
                 self._deliver_all(uid, msg, result, bot, chat_id)
+                # ── WAIT FOR FEEDBACK ──
+                # (Bot waits for next message — if user asks for refinement, loop back to step 1)
             return None
 
         # Casual / everything else → direct AI reply (steps 4-6 combined)
