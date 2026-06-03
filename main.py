@@ -126,6 +126,7 @@ def handle_update(bot, engine, update):
 
     # Normal text response
     if text:
+        memory.add_conv(uid, "user", text)
         bot.send_action(chat_id)
         reply = engine.respond(uid, text, bot, chat_id)
         if reply:
