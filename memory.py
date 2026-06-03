@@ -2,6 +2,7 @@ import json, os, time, re, logging
 
 MEM = os.path.expanduser("~/.ab_memory.json")
 CACHE = os.path.expanduser("~/.ab_cache.json")
+INSTRUCTIONS = os.path.expanduser("~/.ab_instructions.txt")
 logger = logging.getLogger("ab.memory")
 
 def _load():
@@ -159,3 +160,16 @@ def build_context(uid, include_history=True):
             for h in hist[-6:]:
                 lines.append(f"  {'U' if h['role']=='user' else 'A'}: {h['text'][:150]}")
     return "\n".join(lines)
+
+def set_instructions(text, uid=None):
+    """Store custom instructions/prompt file content"""
+    with open(INSTRUCTIONS, "w") as f:
+        f.write(text)
+    return True
+
+def get_instructions():
+    """Get stored instructions"""
+    if os.path.exists(INSTRUCTIONS):
+        with open(INSTRUCTIONS) as f:
+            return f.read()
+    return ""
