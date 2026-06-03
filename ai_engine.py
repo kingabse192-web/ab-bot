@@ -116,6 +116,16 @@ class AIEngine:
         os.makedirs(CODE_DIR, exist_ok=True)
         self.mood = MoodDetector()
         self._download_seed()
+        self._init_instructions()
+
+    def _init_instructions(self):
+        """Load stored instructions on startup"""
+        self.instructions = memory.get_instructions()
+        if not self.instructions:
+            path = os.path.join(os.path.dirname(__file__), "stapes_to_folowe.txt")
+            if os.path.exists(path):
+                self.instructions = open(path).read()
+                memory.set_instructions(self.instructions)
 
     def check_ollama(self):
         if time.time() - self.ollama_check_time < 30:
@@ -1322,12 +1332,13 @@ main();
                 rules = memory.get_rules()
                 mood = self.mood.detect(msg)
                 facts = memory.get_facts(uid)
-                name = facts.get("name", {}).get("v", "there")
+                name = facts.get("name", "there")
                 rules_text = "; ".join(rules) if rules else "be helpful"
+                instructions = memory.get_instructions() or ""
                 if search_context:
-                    prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\n\nSearch results:\n{search_context[:1500]}\n\nAnswer the user's question using these results. Be natural and concise.\n\nUser: {msg}\nYou:"
+                    prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\nInstructions to follow:\n{instructions[:600]}\n\nSearch results:\n{search_context[:1000]}\n\nAnswer the user's question using these results. Be natural and concise.\n\nUser: {msg}\nYou:"
                 else:
-                    prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\nContext: {ctx[:300]}\n\nUser: {msg}\nYou:"
+                    prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\nInstructions to follow:\n{instructions[:600]}\n\nContext: {ctx[:300]}\n\nUser: {msg}\nYou:"
             models = ["microsoft/Phi-3-mini-4k-instruct", "HuggingFaceH4/zephyr-7b-beta", "microsoft/DialoGPT-medium",
                       "google/flan-t5-base", "google/flan-t5-large"]
             for model in models:
@@ -1552,12 +1563,14 @@ main();
         facts = memory.get_facts(uid)
         name = facts.get("name", {}).get("v", "")
         last_topic = facts.get("last_topic", {}).get("v", "")
+        instructions = memory.get_instructions() or ""
 
         prompt = (
             f"You are ab — a smart, conversational AI assistant. "
             f"User: {name or 'someone'}. Mood: {mood}. "
             f"Personality: {personality}. "
             f"We have a {mode} relationship. "
+            f"You follow these instructions strictly:\n{instructions[:800]}\n\n"
             f"You are thorough, natural, and friendly. "
             f"You give complete answers, use examples when helpful, "
             f"and always stay in character. "
