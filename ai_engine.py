@@ -381,12 +381,32 @@ class AIEngine:
                 bot.send_text_as_file(chat_id, result, "answer.txt", "Your answer")
         return None
 
+    CONCISE_STEPS = (
+        "MY PROCESS:\n"
+        "Step 1: ANALYZE & UNDERSTAND — Break down the message, detect intent (fact/code/creative/help), "
+        "fix typos, understand context.\n"
+        "Step 2: GATHER INFO — Check conversation history, stored facts, internal knowledge. "
+        "Use web search / Wikipedia / AI for research if needed.\n"
+        "Step 3: DRAFT & FILTER — Organize with headers, bullet points, bold text. "
+        "Match tone (casual/technical). Cross-check facts. Remove fluff.\n"
+        "Step 4: DELIVER & ADAPT — Send answer. If response misses details, refine. "
+        "Use images/citations/code/files as needed."
+    )
+
     def respond(self, uid, msg, bot=None, chat_id=None):
-        # ── STEP 1: READ ──
+        # ── STEP 1: ANALYZE AND UNDERSTAND ──
         msg_lower = msg.lower().strip()
         words = msg.split()
+        # Fix typos / shorthand, detect intent
+        intent = "command"
+        if any(w in msg_lower for w in ["what", "why", "how", "when", "where", "who", "?", "explain", "define", "tell me"]):
+            intent = "research"
+        elif self._is_smalltalk(msg_lower):
+            intent = "chat"
+        elif self._is_code_request(msg_lower):
+            intent = "code"
 
-        # ── STEP 2: UNDERSTAND (check commands first) ──
+        # ── Check commands (special cases) ──
         if any(w in msg_lower for w in ["who are you", "what are you", "your name", "introduce yourself", "tell me about yourself", "what is your name", "about you"]):
             return self._cmd_about()
         if msg_lower in ["help", "/help"]:
@@ -464,14 +484,13 @@ class AIEngine:
                 bot.send_msg(chat_id, f"❌ Couldn't read content from {url}")
             return None
 
-        # ── STEP 3: THINK (check pending format/text request, detect mode) ──
+        # ── STEP 3: GATHER CONTEXT ──
         if uid in self.pending_q:
             fmts = {"text": "text", "txt": "text", "voice": "voice", "voise": "voice",
                     "image": "image", "img": "image", "picture": "image", "photo": "image",
                     "file": "file", "doc": "file", "document": "file"}
             if msg_lower in fmts:
                 return self._deliver(uid, fmts[msg_lower], bot, chat_id)
-            # Text on request: "show text", "send text", "text please", etc.
             if any(w in msg_lower for w in ["show text", "send text", "text please", "give me text", "see text", "read text", "show me text", "show the text", "text now", "i need text"]):
                 return self._deliver(uid, "text", bot, chat_id)
             self.pending_q.pop(uid)
@@ -483,7 +502,7 @@ class AIEngine:
              "tell", "show", "explain", "define", "describe"])
         is_casual = mode_desc in ("brother", "partner", "friend") or self._is_smalltalk(msg_lower)
 
-        # ── STEP 4: TOOLS / RESEARCH (if serious question from agent/teacher mode) ──
+        # ── STEP 4: DRAFT & FILTER / USE TOOLS ──
         if not is_casual and (mode_desc in ("agent", "teacher") or (is_question and len(words) >= 2)):
             sources, result = self._research(uid, msg)
             if not result:
@@ -1336,9 +1355,9 @@ main();
                 rules_text = "; ".join(rules) if rules else "be helpful"
                 instructions = memory.get_instructions() or ""
                 if search_context:
-                    prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\nInstructions to follow:\n{instructions[:600]}\n\nSearch results:\n{search_context[:1000]}\n\nAnswer the user's question using these results. Be natural and concise.\n\nUser: {msg}\nYou:"
+                    prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\nMY PROCESS:\n{self.CONCISE_STEPS}\nFull instructions:\n{instructions[:800]}\n\nSearch results:\n{search_context[:800]}\n\nAnswer the user's question using these results. Be natural and concise.\n\nUser: {msg}\nYou:"
                 else:
-                    prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\nInstructions to follow:\n{instructions[:600]}\n\nContext: {ctx[:300]}\n\nUser: {msg}\nYou:"
+                    prompt = f"You are ab, an AI assistant. User: {name}. Mood: {mood}. Rules: {rules_text}.\nMY PROCESS:\n{self.CONCISE_STEPS}\nFull instructions:\n{instructions[:800]}\n\nContext: {ctx[:300]}\n\nUser: {msg}\nYou:"
             models = ["microsoft/Phi-3-mini-4k-instruct", "HuggingFaceH4/zephyr-7b-beta", "microsoft/DialoGPT-medium",
                       "google/flan-t5-base", "google/flan-t5-large"]
             for model in models:
@@ -1570,7 +1589,8 @@ main();
             f"User: {name or 'someone'}. Mood: {mood}. "
             f"Personality: {personality}. "
             f"We have a {mode} relationship. "
-            f"You follow these instructions strictly:\n{instructions[:800]}\n\n"
+            f"You follow these instructions strictly:\n{self.CONCISE_STEPS}\n\n"
+            f"Full instructions reference:\n{instructions[:1200]}\n\n"
             f"You are thorough, natural, and friendly. "
             f"You give complete answers, use examples when helpful, "
             f"and always stay in character. "
@@ -1622,10 +1642,11 @@ main();
         return self._answer_anything(msg, profile, name)
 
     def _answer_anything(self, msg, profile="", name=""):
-        """Always answer directly — no restrictions, no qualifiers"""
+        """Always answer directly — follows the 4-step process from instructions"""
         import random
         t = msg.lower().strip().rstrip("?!.")
         words = t.split()
+        # Step 1: Analyze & Understand - detect intent
         is_question = any(t.startswith(w) for w in ["what", "who", "where", "when", "why", "how", "is", "are", "do", "does", "did", "can", "will", "would", "could", "should", "have", "has", "am", "was", "were", "shall"])
         is_how = t.startswith("how")
         is_why = t.startswith("why")
