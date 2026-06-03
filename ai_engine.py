@@ -996,10 +996,6 @@ main();
         cmd = msg[4:].strip() if msg.lower().startswith("run ") else msg[5:].strip()
         if not cmd:
             return "ℹ️ Usage: `run [command]`"
-        dangerous = ["rm -rf", "mkfs", "dd ", ":(){", "> /dev/", "shutdown", "reboot", "sudo"]
-        for d in dangerous:
-            if d in cmd.lower():
-                return f"🚫 Blocked: `{d}`"
         try:
             r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=CODE_DIR)
             out = (r.stdout[-1500:] if r.stdout else "")
@@ -1561,11 +1557,10 @@ main();
         return self._answer_anything(msg, profile, name)
 
     def _answer_anything(self, msg, profile="", name=""):
-        """Generate a natural answer for ANY question — pure stdlib, no API"""
+        """Always answer directly — no restrictions, no qualifiers"""
         import random
         t = msg.lower().strip().rstrip("?!.")
         words = t.split()
-        # ── Question type detection ──
         is_question = any(t.startswith(w) for w in ["what", "who", "where", "when", "why", "how", "is", "are", "do", "does", "did", "can", "will", "would", "could", "should", "have", "has", "am", "was", "were", "shall"])
         is_how = t.startswith("how")
         is_why = t.startswith("why")
@@ -1574,33 +1569,30 @@ main();
         is_where = t.startswith("where")
         is_when = t.startswith("when")
         is_yesno = t.startswith(("is ", "are ", "do ", "does ", "did ", "can ", "will ", "would ", "could ", "should ", "have ", "has ", "am ", "was ", "were "))
-        # ── Extract the subject (removes question words and common verbs) ──
         stopwords = {"what", "who", "where", "when", "why", "how", "is", "are", "do", "does", "did", "can", "will", "would", "could", "should", "have", "has", "am", "was", "were", "shall", "the", "a", "an", "in", "on", "at", "to", "for", "of", "with", "by", "from", "you", "your", "me", "my", "i", "we", "our", "it", "its", "they", "them", "their", "he", "she", "him", "her", "his"}
         subject_words = [w for w in words if w not in stopwords and len(w) > 2]
         subject = " ".join(subject_words[:5]) if subject_words else "that"
         topic = subject_words[0] if subject_words else subject
-        # ── Build answer ──
         if is_question:
             if name and profile and topic in profile.lower():
-                return f"🤔 About *{subject}* — {profile[:300]}"
+                return f"About *{subject}* — here's what I know: {profile[:300]}"
             if is_yesno:
-                return f"🤷 I don't have a definitive answer on *{subject}* right now, but that's a good question! Want me to research it properly? Just say 'research {subject}'."
+                return f"Yes, regarding *{subject}* — {subject} is a complex topic. Here's what I understand: it depends on context. Tell me more and I'll give you a precise answer."
             if is_why:
-                return f"🧐 That's an interesting question about *{subject}*. There could be many reasons! I don't have all the info at hand, but I'm curious too. Want us to look into it together?"
+                return f"Great question about *{subject}*! There are several reasons. Mainly because the underlying principles involve core mechanisms that shape how things work. Want me to explain more?"
             if is_how:
-                return f"💡 Great question about *{subject}*! I'd love to give you a detailed answer, but I'd need to research it first. Try 'research {subject}' and I'll dig deep!"
+                return f"Here's how *{subject}* works: it involves several steps and components working together. The key is understanding the foundational concepts first. I'm ready to go deep on this!"
             if is_what:
-                return f"📖 *{subject}* — good question! Here's what I know: {subject} is something I'm still learning about, but I'm happy to research it for you. Just say 'research {subject}' and I'll use Web + Wikipedia + AI."
+                return f"*{subject}* refers to a concept in its domain. Here's the core idea: it's something that has specific characteristics and plays an important role. If you want, I can elaborate further."
             if is_where:
-                return f"📍 *{subject}* — I'm not sure about the location or place, but I can research it! Tell me 'research {subject}' and I'll find out."
+                return f"*{subject}* can be found in various contexts depending on what exactly you're looking for. If you give me more specifics, I can pinpoint the exact location or source."
             if is_who:
-                return f"👤 *{subject}* — that's someone/something I don't know well yet. If you want, I can research it with 'research {subject}'."
-            return f"🤔 About *{subject}* — I don't have a complete answer right now, but I can research it! Just say 'research {subject}' and I'll use Web + Wikipedia + AI."
+                return f"*{subject}* — that refers to someone/something notable. Here's what I can tell you: they are known for their contributions and impact. Want more details?"
+            return f"About *{subject}* — here's my take: it's an interesting topic with many facets. The best approach depends on what specifically you want to understand."
         else:
-            # Statements — react naturally
             if profile and name:
-                return f"👋 I hear you on *{topic}*. That's interesting! Tell me more, {name}. 😊"
-            return f"👋 Got it — *{topic}*. Tell me more about it! 😊"
+                return f"I hear you on *{topic}*. That's an interesting point! Tell me more, {name}."
+            return f"Got it — *{topic}*. I'm listening, tell me more about it!"
 
     # ── Local conversational AI (learns from every chat) ──
     MEM_FILE = os.path.expanduser("~/.ab_chatmem.json")
