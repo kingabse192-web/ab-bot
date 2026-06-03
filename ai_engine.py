@@ -291,6 +291,24 @@ class AIEngine:
             results.append(("AI", ai_reply[:500]))
         return results
 
+    def _fetch_url(self, url):
+        """Fetch and extract text content from a URL"""
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        try:
+            req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp = urlopen(req, timeout=10)
+            html = resp.read().decode("utf-8", errors="replace")
+            import re as _re
+            text = _re.sub(r'<[^>]+>', ' ', html)
+            text = _re.sub(r'\s+', ' ', text).strip()
+            lines = [l.strip() for l in text.split("\n") if len(l.strip()) > 40]
+            content = "\n".join(lines[:30])[:2000]
+            if content:
+                return content
+        except: pass
+        return None
+
     def _deliver_all(self, uid, q, result, bot, chat_id):
         """Step 6: deliver — voice + image + file (text only on request)"""
         # 6a: Voice
@@ -411,6 +429,30 @@ class AIEngine:
             return self._cmd_fix(uid, msg, bot, chat_id)
         if self._is_code_request(msg_lower):
             return self._auto_code(uid, msg, bot, chat_id)
+
+        # ── LEARN ABOUT — any message that starts or ends with "learn about" ──
+        learn_match = re.search(r"(?:^learn about\s+|^learn\s+about\s+|\s+learn about\s+|\s+learn about$)", msg_lower)
+        url_match = re.search(r"(https?://[^\s]+)", msg_lower)
+        if learn_match and not url_match:
+            topic = re.sub(r"(?i)^learn about\s+|\s+learn about$|^learn\s+about\s+", "", msg).strip()
+            if topic:
+                return self._cmd_learn_online(uid, f"learn {topic}", bot, chat_id)
+        # ── LEARN FROM URL — URL + "learn it/this/that" ──
+        if url_match and any(w in msg_lower for w in ["learn", "read", "get", "fetch", "study", "save", "remember"]):
+            url = url_match.group(1)
+            if bot and chat_id:
+                bot.send_action(chat_id, "typing")
+            content = self._fetch_url(url)
+            if content:
+                title = url.split("/")[-1].replace("_", " ")[:40]
+                memory.learn_fact(uid, f"about_{title}", content[:500])
+                memory.learn_fact(uid, "last_topic", title)
+                if bot and chat_id:
+                    bot.send_msg(chat_id, f"✅ *Learned from:* {url}\n📝 Stored info about *{title}*")
+                return None
+            if bot and chat_id:
+                bot.send_msg(chat_id, f"❌ Couldn't read content from {url}")
+            return None
 
         # ── STEP 3: THINK (check pending format/text request, detect mode) ──
         if uid in self.pending_q:
@@ -1475,9 +1517,19 @@ main();
         for r in rules:
             if r.lower() in msg_lower:
                 return f"📋 *Rule:* {r}"
+        # Check facts: key in message OR message topic in key
+        msg_words = set(msg_lower.split())
         for k, v in facts.items():
-            if k.lower() in msg_lower and len(k) > 3:
+            key_lower = k.lower()
+            if key_lower in msg_lower and len(key_lower) > 3:
                 return f"🧠 *{k}*: {v['v'][:200]}"
+            # Check if message words match fact topic (for "about_X" keys)
+            if key_lower.startswith("about_"):
+                topic_part = key_lower[6:]
+                topic_words = set(topic_part.replace("_", " ").split())
+                overlap = len(msg_words & topic_words)
+                if overlap >= max(1, len(topic_words) // 2):
+                    return f"🧠 *{topic_part}*: {v['v'][:300]}"
 
         # Quick keyword replies
         quick = {
@@ -1575,7 +1627,7 @@ main();
         topic = subject_words[0] if subject_words else subject
         if is_question:
             if name and profile and topic in profile.lower():
-                return f"About *{subject}* — here's what I know: {profile[:300]}"
+                return f"About *{subject}* — here's what I know: {profile[:400]}"
             if is_yesno:
                 return f"Yes, regarding *{subject}* — {subject} is a complex topic. Here's what I understand: it depends on context. Tell me more and I'll give you a precise answer."
             if is_why:
