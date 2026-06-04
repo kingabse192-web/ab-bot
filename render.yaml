@@ -5,6 +5,3 @@ services:
     buildCommand: ""
     startCommand: python3 main.py
     healthCheckPath: /health
-    envVars:
-      - key: AB_TOKEN
-        sync: false
