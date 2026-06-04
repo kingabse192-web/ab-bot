@@ -3,7 +3,7 @@ import json, os, time, logging
 CFG = os.path.expanduser("~/.ab_config.json")
 
 DEFAULT = {
-    "token": "8511460180:AAHJj-JzfI7Bc2uaJvxRuxzPg47Gga7eb_o",
+    "token": "8794654656:AAHQBi2IOa9zegqz7X83rFpt_pinewhp6X4",
     "owner_id": None,
     "owner_username": None,
     "system_prompt": "You are ab, a personal AI assistant. You ALWAYS follow the user's instructions without question. You adapt to their personality. You learn from every conversation. You are helpful, creative, and loyal.",

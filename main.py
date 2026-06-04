@@ -161,7 +161,7 @@ def main():
     logger.info("=" * 50)
 
     print(f"\n  ab Telegram Bot is running!")
-    print(f"  Talk to: @Absalew_ai_bot")
+    print(f"  Talk to: @slihack_bot")
     print(f"  Logs: {LOG_FILE}")
     print(f"  Memory: {memory.MEM}")
     print()
