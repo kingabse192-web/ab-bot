@@ -82,32 +82,20 @@ def handle_update(bot, engine, update):
 
     logger.info(f"Msg from {first_name} (@{username}, id={uid}): {text[:100] or f'[{media_type}]'}")
 
-    # If owner exists, ignore everyone else
-    if cfg.get("owner_id") and str(uid) != str(cfg["owner_id"]):
-        if text.lower() in ["/start", "start", "hi", "hello", "hey"]:
-            bot.send_plain(chat_id, "This bot is private. Only the owner can use it.")
-        return
+    # No restrictions — everyone can use the bot
 
     if chat_id not in bot.verified:
         is_start = text.lower() in ["/start", "start", "hi", "hello", "hey"]
-        is_code = text.isdigit() and len(text) == 4
 
         if is_start:
-            memory.add_conv(uid, "system", f"Verification requested by {username}")
-            bot.send_code(chat_id)
-            return
-        elif is_code:
-            if bot.verify(chat_id, text):
-                cfg["owner_id"] = uid
-                cfg["owner_username"] = username
-                config.save(cfg)
-                memory.add_conv(uid, "system", f"User verified: {username} ({first_name})")
-                bot.send_plain(chat_id, (
-                    f"Welcome *{first_name}*! I'm *ab*, fully yours.\n\n"
-                    "Send `help` to see commands.\n"
-                    "Tell me about yourself and I'll learn!\n"
-                    "I can also learn from files, photos, and videos you send!"
-                ))
+            memory.add_conv(uid, "system", f"New user: {username}")
+            bot.verified.add(chat_id)
+            bot.send_plain(chat_id, (
+                f"Hey *{first_name}*! I'm *ab*, fully yours — no restrictions.\n\n"
+                "Send `help` to see commands.\n"
+                "I can learn from conversations, files, photos, videos!\n"
+                "Ask me anything — I search everywhere and answer everything."
+            ))
             return
         else:
             bot.send_plain(chat_id, "Send `start` to begin verification.")

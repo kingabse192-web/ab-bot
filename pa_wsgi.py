@@ -49,21 +49,16 @@ def handle_update(update):
     first_name = msg['from'].get('first_name', 'User')
     text = msg.get('text', '').strip()
     logger.info(f'Msg from @{username}: {text[:80]}')
-    if str(uid) != str(cfg.get('owner_id')):
-        if text.lower() in ['/start', 'start', 'hi', 'hello', 'hey']:
-            bot.send_plain(chat_id, 'This bot is private. Only the owner can use it.')
-        return
+    # No restrictions — everyone can use the bot
     if chat_id not in bot.verified:
         is_start = text.lower() in ['/start', 'start', 'hi', 'hello', 'hey']
-        is_code = text.isdigit() and len(text) == 4
         if is_start:
-            bot.send_code(chat_id)
-            return
-        elif is_code:
-            bot.verify(chat_id, text)
-            return
-        else:
-            bot.send_plain(chat_id, 'Send `start` to begin verification.')
+            bot.verified.add(chat_id)
+            bot.send_plain(chat_id, (
+                f"Hey *{first_name}*! I'm *ab*, fully yours — no restrictions.\n\n"
+                "Send `help` to see commands.\n"
+                "Ask me anything — I search everywhere and answer everything."
+            ))
             return
     if text:
         bot.send_action(chat_id)
