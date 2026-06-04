@@ -9,7 +9,7 @@ logger = logging.getLogger('pa.wsgi')
 # Load config
 config_path = os.path.expanduser('~/.ab_config.json')
 default_cfg = {
-    "token": "8794175502:AAHsBg5Roc2-SQ1lTODpEDSvr8IJOLkrE88",
+    "token": "8511460180:AAHJj-JzfI7Bc2uaJvxRuxzPg47Gga7eb_o",
     "owner_id": 7267489158,
     "owner_username": "kingabse192web",
 }
