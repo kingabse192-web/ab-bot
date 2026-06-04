@@ -51,15 +51,7 @@ def handle_update(update):
     logger.info(f'Msg from @{username}: {text[:80]}')
     # No restrictions — everyone can use the bot
     if chat_id not in bot.verified:
-        is_start = text.lower() in ['/start', 'start', 'hi', 'hello', 'hey']
-        if is_start:
-            bot.verified.add(chat_id)
-            bot.send_plain(chat_id, (
-                f"Hey *{first_name}*! I'm *ab*, fully yours — no restrictions.\n\n"
-                "Send `help` to see commands.\n"
-                "Ask me anything — I search everywhere and answer everything."
-            ))
-            return
+        bot.verified.add(chat_id)
     if text:
         bot.send_action(chat_id)
         reply = engine.respond(uid, text, bot, chat_id)

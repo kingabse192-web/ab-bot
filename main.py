@@ -83,23 +83,8 @@ def handle_update(bot, engine, update):
     logger.info(f"Msg from {first_name} (@{username}, id={uid}): {text[:100] or f'[{media_type}]'}")
 
     # No restrictions — everyone can use the bot
-
     if chat_id not in bot.verified:
-        is_start = text.lower() in ["/start", "start", "hi", "hello", "hey"]
-
-        if is_start:
-            memory.add_conv(uid, "system", f"New user: {username}")
-            bot.verified.add(chat_id)
-            bot.send_plain(chat_id, (
-                f"Hey *{first_name}*! I'm *ab*, fully yours — no restrictions.\n\n"
-                "Send `help` to see commands.\n"
-                "I can learn from conversations, files, photos, videos!\n"
-                "Ask me anything — I search everywhere and answer everything."
-            ))
-            return
-        else:
-            bot.send_plain(chat_id, "Send `start` to begin verification.")
-            return
+        bot.verified.add(chat_id)
 
     # Handle media
     if has_media and not text:
