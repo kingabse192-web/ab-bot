@@ -141,7 +141,7 @@ def main():
     threading.Thread(target=_keep_alive, daemon=True).start()
 
     cfg = config.load()
-    token = os.environ.get("AB_TOKEN") or cfg.get("token")
+    token = cfg.get("token") or os.environ.get("AB_TOKEN")
 
     bot = Bot(token)
     engine = AIEngine(cfg)
