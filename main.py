@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys, time, json, logging, os, threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.request import urlopen, Request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config, memory
@@ -129,6 +130,15 @@ def start_http():
 
 def main():
     threading.Thread(target=start_http, daemon=True).start()
+
+    # Self-keepalive — ping every 5 min so Render free tier doesn't sleep
+    def _keep_alive():
+        while True:
+            try:
+                urlopen(Request("https://ab-bot-fys8.onrender.com/health"), timeout=20)
+            except: pass
+            time.sleep(300)
+    threading.Thread(target=_keep_alive, daemon=True).start()
 
     cfg = config.load()
     token = os.environ.get("AB_TOKEN") or cfg.get("token")
