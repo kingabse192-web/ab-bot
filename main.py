@@ -16,12 +16,27 @@ logging.basicConfig(
 logger = logging.getLogger("ab.main")
 
 
-class HealthHandler(BaseHTTPRequestHandler):
+class BotHandler(BaseHTTPRequestHandler):
+    bot_ref = None
+    engine_ref = None
+
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(b'{"status":"ok"}')
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length).decode("utf-8") if length else "{}"
+        update = json.loads(body)
+        if BotHandler.bot_ref and BotHandler.engine_ref:
+            handle_update(BotHandler.bot_ref, BotHandler.engine_ref, update)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"ok":true}')
+
     def log_message(self, format, *args):
         pass
 
@@ -124,8 +139,8 @@ def handle_update(bot, engine, update):
 
 def start_http():
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    logger.info(f"Health server on :{port}")
+    server = HTTPServer(("0.0.0.0", port), BotHandler)
+    logger.info(f"Webhook+health server on :{port}")
     server.serve_forever()
 
 def main():
@@ -147,6 +162,10 @@ def main():
 
     bot = Bot(token)
     engine = AIEngine(cfg)
+
+    # Set webhook handler refs
+    BotHandler.bot_ref = bot
+    BotHandler.engine_ref = engine
 
     if "--no-owner" in sys.argv:
         cfg["owner_id"] = None
