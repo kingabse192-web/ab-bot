@@ -141,6 +141,8 @@ def main():
     threading.Thread(target=_keep_alive, daemon=True).start()
 
     cfg = config.load()
+    # Force correct token regardless of env var or saved config
+    cfg["token"] = "8910243577:AAFndCzlVmIScBebVjCEhczBhvi6Ndx_kpo"
     token = cfg.get("token") or os.environ.get("AB_TOKEN")
 
     bot = Bot(token)
